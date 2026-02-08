@@ -1,5 +1,7 @@
 # macOS Examples
 
+Official product page: https://products.y2kb.com/usb-remote-power-switch/v1/
+
 ## 1) Dry-run first (no write)
 ```bash
 cd tools/y2kb-powerctl

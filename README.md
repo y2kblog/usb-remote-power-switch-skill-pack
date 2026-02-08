@@ -2,6 +2,8 @@
 
 Skill pack for safe USB serial control of **Y2KB-037 USB Remote Power Switch**.
 
+Official product page: https://products.y2kb.com/usb-remote-power-switch/v1/
+
 ## Included
 - `SKILL.md` for Codex / Claude Code skill usage
 - `tools/y2kb-powerctl/` CLI (Python + pyserial, minimal dependency)

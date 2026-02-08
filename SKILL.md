@@ -15,8 +15,7 @@ This skill avoids fragile “raw serial text” operations by routing all contro
 through a deterministic CLI.
 
 ## Primary source references
-- Product page source: `content/usb-remote-power-switch/v1.md`
-- Serial command spec: `static/doc/usb-remote-power-switch/v1/serial_command_ja.pdf`
+- Official product page: https://products.y2kb.com/usb-remote-power-switch/v1/
 - USB serial settings from the source docs: `9600 8N1`
 - Command line ending: no newline required
 
