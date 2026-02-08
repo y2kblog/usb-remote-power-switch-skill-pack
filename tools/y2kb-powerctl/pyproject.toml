@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "y2kb-powerctl"
+version = "0.1.0"
+description = "CLI for USB Remote Power Switch (Y2KB-037)"
+requires-python = ">=3.9"
+dependencies = ["pyserial>=3.5"]
+
+[project.scripts]
+y2kb-powerctl = "y2kb_powerctl.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["y2kb_powerctl*"]
