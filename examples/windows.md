@@ -1,5 +1,7 @@
 # Windows Examples
 
+Official product page: https://products.y2kb.com/usb-remote-power-switch/v1/
+
 ## 1) Dry-run first (no write)
 ```powershell
 cd C:\path\to\usb-remote-power-switch-skill-pack\tools\y2kb-powerctl
