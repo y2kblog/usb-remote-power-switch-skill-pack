@@ -1,0 +1,6 @@
+Metadata-Version: 2.4
+Name: y2kb-powerctl
+Version: 0.1.0
+Summary: CLI for USB Remote Power Switch (Y2KB-037)
+Requires-Python: >=3.9
+Requires-Dist: pyserial>=3.5
