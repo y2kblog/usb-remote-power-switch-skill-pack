@@ -13,3 +13,4 @@ htmlcov/
 
 agent_log/
 .prompts.private.noai.md
+.codex/
