@@ -1,4 +1,4 @@
-"""y2kb-powerctl package."""
+"""usb-power-switch-ctl package."""
 
 from .cli import main
 

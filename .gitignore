@@ -10,3 +10,8 @@ venv/
 htmlcov/
 *.log
 .DS_Store
+
+agent_log/
+.prompts.private.noai.md
+.codex/
+.rgignore

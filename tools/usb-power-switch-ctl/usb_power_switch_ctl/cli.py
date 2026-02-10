@@ -5,6 +5,7 @@ import glob
 import json
 import os
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -18,7 +19,8 @@ except Exception:  # pragma: no cover - exercised by environments without pyseri
     serial = None  # type: ignore[assignment]
     list_ports = None  # type: ignore[assignment]
 
-APP_NAME = "y2kb-powerctl"
+APP_NAME = "usb-power-switch-powerctl"
+LOG_FILE_ENV_VAR = "USB_POWER_SWITCH_LOG_FILE"
 DEFAULT_BAUD = 9600
 DEFAULT_WAIT_SECONDS = 3.0
 DEFAULT_TIMEOUT_SECONDS = 1.0
@@ -32,7 +34,7 @@ EXIT_ABORTED = 4
 EXIT_RATE_LIMIT = 5
 EXIT_INTERNAL = 6
 
-SIDE_EFFECT_COMMANDS = {"on", "off", "cycle"}
+SIDE_EFFECT_COMMANDS = {"on", "off", "power-cycle"}
 WIRE_COMMANDS = {"on": "1", "off": "0", "status": "s"}
 KNOWN_PORT_HINTS = ("ch340", "ch341", "wch", "usb serial", "ttyusb", "ttyacm")
 
@@ -160,13 +162,13 @@ class PySerialTransport:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="y2kb-powerctl",
-        description="Control Y2KB USB Remote Power Switch over USB serial.",
+        prog="usb-power-switch-ctl",
+        description="Control USB Remote Power Switch over USB serial.",
     )
     parser.add_argument(
         "command",
         nargs="?",
-        choices=["on", "off", "cycle", "status"],
+        choices=["on", "off", "power-cycle", "status"],
         help="Control command to run",
     )
     parser.add_argument(
@@ -177,7 +179,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--wait",
         type=float,
         default=DEFAULT_WAIT_SECONDS,
-        help=f"Wait seconds for cycle command (default: {DEFAULT_WAIT_SECONDS})",
+        help=f"Wait seconds for power-cycle command (default: {DEFAULT_WAIT_SECONDS})",
     )
     parser.add_argument(
         "--baud",
@@ -230,7 +232,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_MIN_CYCLE_INTERVAL_SECONDS,
         help=(
-            "Minimum seconds between execute cycle commands "
+            "Minimum seconds between execute power-cycle commands "
             f"(default: {DEFAULT_MIN_CYCLE_INTERVAL_SECONDS})"
         ),
     )
@@ -385,7 +387,7 @@ def planned_actions(command: str, wait_seconds: float) -> list[ActionEntry]:
         return [ActionEntry(step="plan_on", tx="1", note="dry-run; no write")]
     if command == "off":
         return [ActionEntry(step="plan_off", tx="0", note="dry-run; no write")]
-    if command == "cycle":
+    if command == "power-cycle":
         return [
             ActionEntry(step="plan_cycle_off", tx="0", note="dry-run; no write"),
             ActionEntry(step="plan_cycle_wait", note=f"sleep {wait_seconds:.2f}s"),
@@ -399,7 +401,7 @@ def predict_state_after(command: str, state_before: str | None) -> str | None:
         return "on"
     if command == "off":
         return "off"
-    if command == "cycle":
+    if command == "power-cycle":
         return "on"
     if command == "status":
         return state_before
@@ -426,7 +428,7 @@ def enforce_cycle_rate_limit(
             if elapsed < min_interval:
                 raise PowerCtlError(
                     (
-                        "cycle rate limit hit: "
+                        "power-cycle rate limit hit: "
                         f"{elapsed:.2f}s elapsed, minimum is {min_interval:.2f}s"
                     ),
                     EXIT_RATE_LIMIT,
@@ -457,6 +459,38 @@ def default_log_file() -> Path:
     return root / APP_NAME / "powerctl.log"
 
 
+def fallback_log_file() -> Path:
+    return Path(tempfile.gettempdir()) / APP_NAME / "powerctl.log"
+
+
+def pick_log_file(cli_log_file: Path | None) -> Path:
+    if cli_log_file is not None:
+        preferred = cli_log_file
+    else:
+        from_env = os.environ.get(LOG_FILE_ENV_VAR)
+        if from_env:
+            preferred = Path(from_env).expanduser()
+        else:
+            preferred = default_log_file()
+    return pick_writable_log_file(preferred)
+
+
+def pick_writable_log_file(preferred: Path) -> Path:
+    candidates = [preferred]
+    fallback = fallback_log_file()
+    if fallback != preferred:
+        candidates.append(fallback)
+    for candidate in candidates:
+        try:
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            with candidate.open("a", encoding="utf-8"):
+                pass
+            return candidate
+        except OSError:
+            continue
+    return preferred
+
+
 def to_rfc3339(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -467,6 +501,22 @@ def append_jsonl_log(log_file: Path, payload: dict[str, object]) -> None:
     record["logged_at"] = to_rfc3339(datetime.now(timezone.utc))
     with log_file.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def append_jsonl_log_best_effort(log_file: Path, payload: dict[str, object]) -> Path:
+    candidates = [log_file]
+    fallback = fallback_log_file()
+    if fallback != log_file:
+        candidates.append(fallback)
+    for candidate in candidates:
+        payload_for_log = dict(payload)
+        payload_for_log["log_file"] = str(candidate)
+        try:
+            append_jsonl_log(candidate, payload_for_log)
+            return candidate
+        except OSError:
+            continue
+    return log_file
 
 
 def run_command(
@@ -541,7 +591,7 @@ def run_command(
                 input_fn=input_fn,
             )
 
-        if command == "cycle":
+        if command == "power-cycle":
             stamp_file = cycle_stamp_path(args.log_file)
             now_epoch = time.time()
             enforce_cycle_rate_limit(
@@ -661,7 +711,7 @@ def main(
     now_fn = now_fn or (lambda: datetime.now(timezone.utc))
 
     args = parse_args(argv)
-    args.log_file = args.log_file or default_log_file()
+    args.log_file = pick_log_file(args.log_file)
 
     if args.list_ports:
         return print_ports(args=args, output_fn=output_fn, detect_ports_fn=detect_ports_fn)
@@ -681,7 +731,8 @@ def main(
             log_file=args.log_file,
             error=None,
         )
-        append_jsonl_log(args.log_file, payload)
+        used_log_file = append_jsonl_log_best_effort(args.log_file, payload)
+        payload["log_file"] = str(used_log_file)
         if args.json:
             output_fn(json.dumps(payload, ensure_ascii=False))
         else:
@@ -708,7 +759,8 @@ def main(
                 "message": str(exc),
             },
         )
-        append_jsonl_log(args.log_file, payload)
+        used_log_file = append_jsonl_log_best_effort(args.log_file, payload)
+        payload["log_file"] = str(used_log_file)
         if args.json:
             error_fn(json.dumps(payload, ensure_ascii=False))
         else:
@@ -729,4 +781,3 @@ def main(
         else:
             error_fn(str(payload))
         return EXIT_INTERNAL
-
