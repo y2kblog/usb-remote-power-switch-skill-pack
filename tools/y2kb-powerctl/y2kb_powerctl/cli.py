@@ -19,8 +19,8 @@ except Exception:  # pragma: no cover - exercised by environments without pyseri
     serial = None  # type: ignore[assignment]
     list_ports = None  # type: ignore[assignment]
 
-APP_NAME = "y2kb-powerctl"
-LOG_FILE_ENV_VAR = "Y2KB_POWERCTL_LOG_FILE"
+APP_NAME = "usb-power-switch-powerctl"
+LOG_FILE_ENV_VAR = "USB_POWER_SWITCH_LOG_FILE"
 DEFAULT_BAUD = 9600
 DEFAULT_WAIT_SECONDS = 3.0
 DEFAULT_TIMEOUT_SECONDS = 1.0

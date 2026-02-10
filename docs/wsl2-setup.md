@@ -92,7 +92,7 @@ y2kb-powerctl on --port /dev/ttyUSB0 --dry-run --json
 Optional (recommended for restricted/sandboxed environments):
 
 ```bash
-export Y2KB_POWERCTL_LOG_FILE=/tmp/y2kb-powerctl.log
+export USB_POWER_SWITCH_LOG_FILE=/tmp/usb-power-switch-powerctl.log
 ```
 
 The CLI now falls back to a temp-directory log path automatically when the
@@ -134,5 +134,5 @@ This script checks:
   - Wrong port, port disappeared, or in use by another process.
 
 - `Permission denied` while writing log file
-  - Set `Y2KB_POWERCTL_LOG_FILE=/tmp/y2kb-powerctl.log` and retry.
+  - Set `USB_POWER_SWITCH_LOG_FILE=/tmp/usb-power-switch-powerctl.log` and retry.
   - The CLI also attempts automatic temp-path fallback.

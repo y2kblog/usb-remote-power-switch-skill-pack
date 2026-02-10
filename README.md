@@ -44,5 +44,5 @@ y2kb-powerctl on --port <PORT> --dry-run --json
 
 ## Log path override
 - You can pin the log path for all commands with environment variable:
-  - Linux/macOS: `export Y2KB_POWERCTL_LOG_FILE=/tmp/y2kb-powerctl.log`
-  - Windows PowerShell: `$env:Y2KB_POWERCTL_LOG_FILE = "$env:TEMP\\y2kb-powerctl.log"`
+  - Linux/macOS: `export USB_POWER_SWITCH_LOG_FILE=/tmp/usb-power-switch-powerctl.log`
+  - Windows PowerShell: `$env:USB_POWER_SWITCH_LOG_FILE = "$env:TEMP\\usb-power-switch-powerctl.log"`
