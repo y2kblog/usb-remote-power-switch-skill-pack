@@ -46,3 +46,7 @@ usb-power-switch-ctl on --port <PORT> --dry-run --json
 - You can pin the log path for all commands with environment variable:
   - Linux/macOS: `export USB_POWER_SWITCH_LOG_FILE=/tmp/usb-power-switch-powerctl.log`
   - Windows PowerShell: `$env:USB_POWER_SWITCH_LOG_FILE = "$env:TEMP\\usb-power-switch-powerctl.log"`
+
+## License
+This project is licensed under the Apache License 2.0.
+See `LICENSE` for details.
