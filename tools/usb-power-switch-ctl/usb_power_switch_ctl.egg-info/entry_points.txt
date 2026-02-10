@@ -1,2 +1,0 @@
-[console_scripts]
-usb-power-switch-ctl = usb_power_switch_ctl.cli:main
