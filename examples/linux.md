@@ -1,27 +1,27 @@
 # Linux Examples
 
-Official product page: https://products.y2kb.com/usb-remote-power-switch/v1/
+Official product page: https://products.example.com/usb-remote-power-switch/v1/
 
 ## 1) Dry-run first (no write)
 ```bash
-cd tools/y2kb-powerctl
-./y2kb-powerctl on --port /dev/ttyUSB0 --dry-run --json
+cd tools/usb-power-switch-ctl
+./usb-power-switch-ctl on --port /dev/ttyUSB0 --dry-run --json
 ```
 
 ## 2) Execute ON
 ```bash
-cd tools/y2kb-powerctl
-./y2kb-powerctl on --port /dev/ttyUSB0 --execute
+cd tools/usb-power-switch-ctl
+./usb-power-switch-ctl on --port /dev/ttyUSB0 --execute
 ```
 
 ## 3) Verify status
 ```bash
-cd tools/y2kb-powerctl
-./y2kb-powerctl status --port /dev/ttyUSB0 --json
+cd tools/usb-power-switch-ctl
+./usb-power-switch-ctl status --port /dev/ttyUSB0 --json
 ```
 
 ## 4) Cycle (3-second wait)
 ```bash
-cd tools/y2kb-powerctl
-./y2kb-powerctl power-cycle --port /dev/ttyUSB0 --wait 3 --execute
+cd tools/usb-power-switch-ctl
+./usb-power-switch-ctl power-cycle --port /dev/ttyUSB0 --wait 3 --execute
 ```

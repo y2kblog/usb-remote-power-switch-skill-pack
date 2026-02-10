@@ -1,12 +1,12 @@
 ---
 name: usb-remote-power-switch
-description: Safely operate the Y2KB-037 USB Remote Power Switch over USB serial using the bundled CLI (y2kb-powerctl), with dry-run by default and explicit confirmation for side-effect actions.
+description: Safely operate the USB Remote Power Switch over USB serial using the bundled CLI (usb-power-switch-ctl), with dry-run by default and explicit confirmation for side-effect actions.
 ---
 
 # USB Remote Power Switch Skill
 
 ## Scope
-- Device: Y2KB-037 USB Remote Power Switch
+- Device: USB Remote Power Switch
 - Transport: USB serial only
 - Main operations: `on`, `off`, `power-cycle`, `status`
 
@@ -15,7 +15,7 @@ This skill avoids fragile “raw serial text” operations by routing all contro
 through a deterministic CLI.
 
 ## Primary source references
-- Official product page: https://products.y2kb.com/usb-remote-power-switch/v1/
+- Official product page: https://products.example.com/usb-remote-power-switch/v1/
 - USB serial settings from the source docs: `9600 8N1`
 - Command line ending: no newline required
 
@@ -29,22 +29,22 @@ through a deterministic CLI.
 5. If port is not specified, show candidates and require explicit selection.
 
 ## CLI location
-- `tools/y2kb-powerctl/`
+- `tools/usb-power-switch-ctl/`
 
 ## CLI command
 ```bash
-y2kb-powerctl on|off|power-cycle|status --port <PORT> [--wait 3] [--baud 9600] [--json] [--dry-run]
+usb-power-switch-ctl on|off|power-cycle|status --port <PORT> [--wait 3] [--baud 9600] [--json] [--dry-run]
 ```
 
 ## Canonical operation flow
 1. Detect ports:
-   - `y2kb-powerctl --list-ports`
+   - `usb-power-switch-ctl --list-ports`
 2. Plan (no side effect):
-   - `y2kb-powerctl on --port <PORT> --dry-run --json`
+   - `usb-power-switch-ctl on --port <PORT> --dry-run --json`
 3. Execute:
-   - `y2kb-powerctl on --port <PORT> --execute`
+   - `usb-power-switch-ctl on --port <PORT> --execute`
 4. Verify:
-   - `y2kb-powerctl status --port <PORT> --json`
+   - `usb-power-switch-ctl status --port <PORT> --json`
 
 ## Command mapping
 - `on` => serial command `1`

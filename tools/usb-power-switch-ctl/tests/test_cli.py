@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
-from y2kb_powerctl import cli
+from usb_power_switch_ctl import cli
 
 
 FIXED_NOW = datetime(2026, 2, 8, 0, 0, tzinfo=timezone.utc)
@@ -173,7 +173,7 @@ class CliTests(unittest.TestCase):
             log_file = Path(tmp) / "powerctl.log"
             fake_stdin = mock.Mock()
             fake_stdin.isatty.return_value = False
-            with mock.patch("y2kb_powerctl.cli.sys.stdin", fake_stdin):
+            with mock.patch("usb_power_switch_ctl.cli.sys.stdin", fake_stdin):
                 code = cli.main(
                     [
                         "off",
@@ -210,7 +210,7 @@ class CliTests(unittest.TestCase):
             stamp_file = cli.cycle_stamp_path(log_file)
             stamp_file.parent.mkdir(parents=True, exist_ok=True)
             stamp_file.write_text("999.000000", encoding="utf-8")
-            with mock.patch("y2kb_powerctl.cli.time.time", return_value=1000.0):
+            with mock.patch("usb_power_switch_ctl.cli.time.time", return_value=1000.0):
                 code = cli.main(
                     [
                         "power-cycle",
@@ -253,8 +253,8 @@ class CliTests(unittest.TestCase):
 
         stdout = io.StringIO()
         stderr = io.StringIO()
-        with mock.patch("y2kb_powerctl.cli.append_jsonl_log", side_effect=fake_append):
-            with mock.patch("y2kb_powerctl.cli.fallback_log_file", return_value=fallback_log):
+        with mock.patch("usb_power_switch_ctl.cli.append_jsonl_log", side_effect=fake_append):
+            with mock.patch("usb_power_switch_ctl.cli.fallback_log_file", return_value=fallback_log):
                 code = cli.main(
                     [
                         "status",

@@ -162,8 +162,8 @@ class PySerialTransport:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="y2kb-powerctl",
-        description="Control Y2KB USB Remote Power Switch over USB serial.",
+        prog="usb-power-switch-ctl",
+        description="Control USB Remote Power Switch over USB serial.",
     )
     parser.add_argument(
         "command",

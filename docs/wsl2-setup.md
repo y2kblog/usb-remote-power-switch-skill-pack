@@ -2,7 +2,7 @@
 
 This guide is for the case where:
 - Codex (or your terminal) runs inside WSL2, and
-- the Y2KB-037 USB remote power switch is plugged into the Windows host.
+- the USB remote power switch is plugged into the Windows host.
 
 Without USB passthrough, WSL2 often cannot talk to the device directly.
 
@@ -75,7 +75,7 @@ Then restart WSL session (`wsl --shutdown` from Windows, then reopen WSL).
 ## 3. Install and validate CLI in WSL2
 
 ```bash
-cd tools/y2kb-powerctl
+cd tools/usb-power-switch-ctl
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e .
@@ -84,9 +84,9 @@ python -m pip install -e .
 Safe validation flow:
 
 ```bash
-y2kb-powerctl --list-ports --json
-y2kb-powerctl status --port /dev/ttyUSB0 --json --timeout 3
-y2kb-powerctl on --port /dev/ttyUSB0 --dry-run --json
+usb-power-switch-ctl --list-ports --json
+usb-power-switch-ctl status --port /dev/ttyUSB0 --json --timeout 3
+usb-power-switch-ctl on --port /dev/ttyUSB0 --dry-run --json
 ```
 
 Optional (recommended for restricted/sandboxed environments):
@@ -113,7 +113,7 @@ This script checks:
 - WSL environment detection
 - `dialout` membership
 - `/dev/ttyUSB*` or `/dev/ttyACM*` visibility
-- `y2kb-powerctl` availability
+- `usb-power-switch-ctl` availability
 - non-side-effect `--list-ports` probe
 
 ## 5. Troubleshooting map

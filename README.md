@@ -1,8 +1,8 @@
 # USB Remote Power Switch Skill Pack
 
-Skill pack for safe USB serial control of **Y2KB-037 USB Remote Power Switch**.
+Skill pack for safe USB serial control of **USB Remote Power Switch**.
 
-Official product page: https://products.y2kb.com/usb-remote-power-switch/v1/
+Official product page: https://products.example.com/usb-remote-power-switch/v1/
 
 ## WSL2 first-time setup (recommended)
 If Codex is running in WSL2 and the device is plugged into the Windows host,
@@ -20,19 +20,19 @@ Detailed guide: `docs/wsl2-setup.md`
 
 ## Included
 - `SKILL.md` for Codex / Claude Code skill usage
-- `tools/y2kb-powerctl/` CLI (Python + pyserial, minimal dependency)
+- `tools/usb-power-switch-ctl/` CLI (Python + pyserial, minimal dependency)
 - `examples/` for Linux, macOS, Windows
 - Unit tests for argument parsing, dry-run safety, and JSON output
 
 ## Quick start
 ```bash
-cd tools/y2kb-powerctl
+cd tools/usb-power-switch-ctl
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e .
-y2kb-powerctl --list-ports
-y2kb-powerctl status --port <PORT> --json
-y2kb-powerctl on --port <PORT> --dry-run --json
+usb-power-switch-ctl --list-ports
+usb-power-switch-ctl status --port <PORT> --json
+usb-power-switch-ctl on --port <PORT> --dry-run --json
 ```
 
 ## Safety defaults
