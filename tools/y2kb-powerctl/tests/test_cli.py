@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -237,6 +238,71 @@ class CliTests(unittest.TestCase):
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["error"]["code"], "cycle_rate_limited")
         self.assertEqual(fake_transport.writes, ["s"])
+
+    def test_log_file_falls_back_when_primary_write_fails(self) -> None:
+        primary_log = Path("/tmp/primary-powerctl.log")
+        fallback_log = Path("/tmp/fallback-powerctl.log")
+        fake_transport = FakeTransport(["1"])
+
+        def fake_factory(**_: object) -> FakeTransport:
+            return fake_transport
+
+        def fake_append(log_file: Path, payload: dict[str, object]) -> None:
+            if log_file == primary_log:
+                raise PermissionError("primary denied")
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with mock.patch("y2kb_powerctl.cli.append_jsonl_log", side_effect=fake_append):
+            with mock.patch("y2kb_powerctl.cli.fallback_log_file", return_value=fallback_log):
+                code = cli.main(
+                    [
+                        "status",
+                        "--port",
+                        "COM9",
+                        "--json",
+                        "--log-file",
+                        str(primary_log),
+                    ],
+                    output_stream=stdout,
+                    error_stream=stderr,
+                    transport_factory=fake_factory,
+                    now_fn=lambda: FIXED_NOW,
+                )
+
+        self.assertEqual(code, cli.EXIT_OK)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["log_file"], str(fallback_log))
+        self.assertEqual(stderr.getvalue().strip(), "")
+
+    def test_log_file_can_be_set_by_environment_variable(self) -> None:
+        fake_transport = FakeTransport(["0"])
+
+        def fake_factory(**_: object) -> FakeTransport:
+            return fake_transport
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            env_log_file = str(Path(tmp) / "env-powerctl.log")
+            with mock.patch.dict(os.environ, {cli.LOG_FILE_ENV_VAR: env_log_file}, clear=False):
+                code = cli.main(
+                    [
+                        "status",
+                        "--port",
+                        "COM9",
+                        "--json",
+                    ],
+                    output_stream=stdout,
+                    error_stream=stderr,
+                    transport_factory=fake_factory,
+                    now_fn=lambda: FIXED_NOW,
+                )
+
+        self.assertEqual(code, cli.EXIT_OK)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["log_file"], env_log_file)
+        self.assertEqual(stderr.getvalue().strip(), "")
 
 
 if __name__ == "__main__":

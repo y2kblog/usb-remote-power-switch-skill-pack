@@ -89,6 +89,15 @@ y2kb-powerctl status --port /dev/ttyUSB0 --json --timeout 3
 y2kb-powerctl on --port /dev/ttyUSB0 --dry-run --json
 ```
 
+Optional (recommended for restricted/sandboxed environments):
+
+```bash
+export Y2KB_POWERCTL_LOG_FILE=/tmp/y2kb-powerctl.log
+```
+
+The CLI now falls back to a temp-directory log path automatically when the
+default log path is not writable.
+
 After read/status checks succeed, you can execute side-effect commands with
 `--execute`.
 
@@ -124,3 +133,6 @@ This script checks:
 - `error.code = open_port_failed`
   - Wrong port, port disappeared, or in use by another process.
 
+- `Permission denied` while writing log file
+  - Set `Y2KB_POWERCTL_LOG_FILE=/tmp/y2kb-powerctl.log` and retry.
+  - The CLI also attempts automatic temp-path fallback.

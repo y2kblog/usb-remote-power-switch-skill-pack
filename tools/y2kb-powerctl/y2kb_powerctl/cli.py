@@ -5,6 +5,7 @@ import glob
 import json
 import os
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -19,6 +20,7 @@ except Exception:  # pragma: no cover - exercised by environments without pyseri
     list_ports = None  # type: ignore[assignment]
 
 APP_NAME = "y2kb-powerctl"
+LOG_FILE_ENV_VAR = "Y2KB_POWERCTL_LOG_FILE"
 DEFAULT_BAUD = 9600
 DEFAULT_WAIT_SECONDS = 3.0
 DEFAULT_TIMEOUT_SECONDS = 1.0
@@ -457,6 +459,38 @@ def default_log_file() -> Path:
     return root / APP_NAME / "powerctl.log"
 
 
+def fallback_log_file() -> Path:
+    return Path(tempfile.gettempdir()) / APP_NAME / "powerctl.log"
+
+
+def pick_log_file(cli_log_file: Path | None) -> Path:
+    if cli_log_file is not None:
+        preferred = cli_log_file
+    else:
+        from_env = os.environ.get(LOG_FILE_ENV_VAR)
+        if from_env:
+            preferred = Path(from_env).expanduser()
+        else:
+            preferred = default_log_file()
+    return pick_writable_log_file(preferred)
+
+
+def pick_writable_log_file(preferred: Path) -> Path:
+    candidates = [preferred]
+    fallback = fallback_log_file()
+    if fallback != preferred:
+        candidates.append(fallback)
+    for candidate in candidates:
+        try:
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            with candidate.open("a", encoding="utf-8"):
+                pass
+            return candidate
+        except OSError:
+            continue
+    return preferred
+
+
 def to_rfc3339(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -467,6 +501,22 @@ def append_jsonl_log(log_file: Path, payload: dict[str, object]) -> None:
     record["logged_at"] = to_rfc3339(datetime.now(timezone.utc))
     with log_file.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def append_jsonl_log_best_effort(log_file: Path, payload: dict[str, object]) -> Path:
+    candidates = [log_file]
+    fallback = fallback_log_file()
+    if fallback != log_file:
+        candidates.append(fallback)
+    for candidate in candidates:
+        payload_for_log = dict(payload)
+        payload_for_log["log_file"] = str(candidate)
+        try:
+            append_jsonl_log(candidate, payload_for_log)
+            return candidate
+        except OSError:
+            continue
+    return log_file
 
 
 def run_command(
@@ -661,7 +711,7 @@ def main(
     now_fn = now_fn or (lambda: datetime.now(timezone.utc))
 
     args = parse_args(argv)
-    args.log_file = args.log_file or default_log_file()
+    args.log_file = pick_log_file(args.log_file)
 
     if args.list_ports:
         return print_ports(args=args, output_fn=output_fn, detect_ports_fn=detect_ports_fn)
@@ -681,7 +731,8 @@ def main(
             log_file=args.log_file,
             error=None,
         )
-        append_jsonl_log(args.log_file, payload)
+        used_log_file = append_jsonl_log_best_effort(args.log_file, payload)
+        payload["log_file"] = str(used_log_file)
         if args.json:
             output_fn(json.dumps(payload, ensure_ascii=False))
         else:
@@ -708,7 +759,8 @@ def main(
                 "message": str(exc),
             },
         )
-        append_jsonl_log(args.log_file, payload)
+        used_log_file = append_jsonl_log_best_effort(args.log_file, payload)
+        payload["log_file"] = str(used_log_file)
         if args.json:
             error_fn(json.dumps(payload, ensure_ascii=False))
         else:

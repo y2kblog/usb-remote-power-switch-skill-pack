@@ -40,3 +40,9 @@ y2kb-powerctl on --port <PORT> --dry-run --json
 - Side-effect operations require explicit `--execute`
 - Pre-execution status check and confirmation prompt
 - Power-cycle command rate-limiting
+- If default log path is not writable, logging falls back to system temp dir
+
+## Log path override
+- You can pin the log path for all commands with environment variable:
+  - Linux/macOS: `export Y2KB_POWERCTL_LOG_FILE=/tmp/y2kb-powerctl.log`
+  - Windows PowerShell: `$env:Y2KB_POWERCTL_LOG_FILE = "$env:TEMP\\y2kb-powerctl.log"`

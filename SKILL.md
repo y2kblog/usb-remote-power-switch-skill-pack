@@ -73,6 +73,8 @@ y2kb-powerctl on|off|power-cycle|status --port <PORT> [--wait 3] [--baud 9600] [
 - Linux: `~/.local/state/y2kb-powerctl/powerctl.log` (`XDG_STATE_HOME` preferred)
 - macOS: `~/Library/Logs/y2kb-powerctl/powerctl.log`
 - Windows: `%LOCALAPPDATA%\\y2kb-powerctl\\powerctl.log`
+- If default path is not writable, automatically falls back to temp directory.
+- Optional override for all commands: `Y2KB_POWERCTL_LOG_FILE`
 
 ## Troubleshooting
 - CH340/CH341 not detected:
