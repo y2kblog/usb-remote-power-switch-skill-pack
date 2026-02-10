@@ -2,7 +2,7 @@
 
 Skill pack for safe USB serial control of **USB Remote Power Switch**.
 
-Official product page: https://products.example.com/usb-remote-power-switch/v1/
+Official product page: https://products.y2kb.com/usb-remote-power-switch/v1/
 
 ## WSL2 first-time setup (recommended)
 If Codex is running in WSL2 and the device is plugged into the Windows host,
@@ -46,3 +46,7 @@ usb-power-switch-ctl on --port <PORT> --dry-run --json
 - You can pin the log path for all commands with environment variable:
   - Linux/macOS: `export USB_POWER_SWITCH_LOG_FILE=/tmp/usb-power-switch-powerctl.log`
   - Windows PowerShell: `$env:USB_POWER_SWITCH_LOG_FILE = "$env:TEMP\\usb-power-switch-powerctl.log"`
+
+## License
+This project is licensed under the Apache License 2.0.
+See `LICENSE` for details.
