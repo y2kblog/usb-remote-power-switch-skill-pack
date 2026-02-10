@@ -4,17 +4,28 @@ Skill pack for safe USB serial control of **USB Remote Power Switch**.
 
 Official product page: https://products.y2kb.com/usb-remote-power-switch/v1/
 
-## WSL2 first-time setup (recommended)
-If Codex is running in WSL2 and the device is plugged into the Windows host,
-set up USB passthrough first so the serial device appears as `/dev/ttyUSB*` or
-`/dev/ttyACM*` in Linux.
+## First-time setup (all environments)
+This skill pack can be used on Linux, macOS, Windows, and WSL2 as long as the
+USB serial device is visible from the execution environment.
 
-1. On Windows (Administrator PowerShell), install and configure `usbipd-win`.
-2. Attach the CH340/USB serial device to WSL.
-3. Run preflight checks from this repository:
+1. Connect the device and confirm the serial port name in your environment.
+   - Linux / WSL2: `/dev/ttyUSB*` or `/dev/ttyACM*`
+   - macOS: `/dev/tty.usbserial*` or `/dev/tty.usbmodem*`
+   - Windows: `COMx`
+2. Run preflight checks:
    ```bash
-   bash scripts/wsl2-preflight.sh
+   usb-power-switch-ctl --list-ports
+   usb-power-switch-ctl status --port <PORT> --json
+   usb-power-switch-ctl on --port <PORT> --dry-run --json
    ```
+
+### Additional step for Windows host + WSL2 only
+If Codex is running in WSL2 and the device is plugged into the Windows host,
+set up USB passthrough first so the serial device appears in Linux.
+
+```bash
+bash scripts/wsl2-preflight.sh
+```
 
 Detailed guide: `docs/wsl2-setup.md`
 
