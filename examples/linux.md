@@ -23,5 +23,5 @@ cd tools/y2kb-powerctl
 ## 4) Cycle (3-second wait)
 ```bash
 cd tools/y2kb-powerctl
-./y2kb-powerctl cycle --port /dev/ttyUSB0 --wait 3 --execute
+./y2kb-powerctl power-cycle --port /dev/ttyUSB0 --wait 3 --execute
 ```

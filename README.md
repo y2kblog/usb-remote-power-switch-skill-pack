@@ -39,4 +39,4 @@ y2kb-powerctl on --port <PORT> --dry-run --json
 - `--dry-run` by default
 - Side-effect operations require explicit `--execute`
 - Pre-execution status check and confirmation prompt
-- Cycle command rate-limiting
+- Power-cycle command rate-limiting

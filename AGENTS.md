@@ -38,7 +38,7 @@ python3 -m unittest discover -s tests -v
 
 ## Safety invariants
 - `--dry-run` is default.
-- `on/off/cycle` require explicit `--execute` to write.
+- `on/off/power-cycle` require explicit `--execute` to write.
 - State is read before side-effect commands.
 - Interactive confirmation is required unless `--yes`.
-- `cycle` is rate-limited by default.
+- `power-cycle` is rate-limited by default.

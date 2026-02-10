@@ -37,6 +37,10 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.wait, cli.DEFAULT_WAIT_SECONDS)
         self.assertTrue(args.dry_run)
 
+    def test_parse_args_rejects_legacy_cycle(self) -> None:
+        with self.assertRaises(SystemExit):
+            cli.parse_args(["cycle", "--port", "COM3"])
+
     def test_dry_run_does_not_open_transport(self) -> None:
         called = {"value": False}
 
@@ -208,7 +212,7 @@ class CliTests(unittest.TestCase):
             with mock.patch("y2kb_powerctl.cli.time.time", return_value=1000.0):
                 code = cli.main(
                     [
-                        "cycle",
+                        "power-cycle",
                         "--port",
                         "COM9",
                         "--execute",
