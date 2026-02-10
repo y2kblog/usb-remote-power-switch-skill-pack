@@ -1,0 +1,2 @@
+[console_scripts]
+y2kb-powerctl = y2kb_powerctl.cli:main
