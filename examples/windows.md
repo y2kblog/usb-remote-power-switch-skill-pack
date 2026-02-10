@@ -23,7 +23,7 @@ cd C:\path\to\usb-remote-power-switch-skill-pack\tools\y2kb-powerctl
 ## 4) Cycle (3-second wait)
 ```powershell
 cd C:\path\to\usb-remote-power-switch-skill-pack\tools\y2kb-powerctl
-.\y2kb-powerctl.cmd cycle --port COM3 --wait 3 --execute
+.\y2kb-powerctl.cmd power-cycle --port COM3 --wait 3 --execute
 ```
 
 ## Alternative: run as Python module

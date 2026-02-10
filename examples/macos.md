@@ -23,5 +23,5 @@ cd tools/y2kb-powerctl
 ## 4) Cycle (respect default rate limit)
 ```bash
 cd tools/y2kb-powerctl
-./y2kb-powerctl cycle --port /dev/cu.usbserial-1410 --wait 3 --execute
+./y2kb-powerctl power-cycle --port /dev/cu.usbserial-1410 --wait 3 --execute
 ```

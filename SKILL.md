@@ -8,7 +8,7 @@ description: Safely operate the Y2KB-037 USB Remote Power Switch over USB serial
 ## Scope
 - Device: Y2KB-037 USB Remote Power Switch
 - Transport: USB serial only
-- Main operations: `on`, `off`, `cycle`, `status`
+- Main operations: `on`, `off`, `power-cycle`, `status`
 
 ## Why this skill exists
 This skill avoids fragile “raw serial text” operations by routing all control
@@ -22,10 +22,10 @@ through a deterministic CLI.
 ## Safety rules (mandatory)
 1. Use CLI only. Do not send raw serial bytes directly from free-form prompts.
 2. Default to `--dry-run` (already default behavior).
-3. For side-effect commands (`on`, `off`, `cycle`):
+3. For side-effect commands (`on`, `off`, `power-cycle`):
    - read current state first
    - require interactive confirmation unless `--yes` is explicitly set
-4. Keep cycle operations rate-limited (default minimum interval: 5s).
+4. Keep power-cycle operations rate-limited (default minimum interval: 5s).
 5. If port is not specified, show candidates and require explicit selection.
 
 ## CLI location
@@ -33,7 +33,7 @@ through a deterministic CLI.
 
 ## CLI command
 ```bash
-y2kb-powerctl on|off|cycle|status --port <PORT> [--wait 3] [--baud 9600] [--json] [--dry-run]
+y2kb-powerctl on|off|power-cycle|status --port <PORT> [--wait 3] [--baud 9600] [--json] [--dry-run]
 ```
 
 ## Canonical operation flow
@@ -50,7 +50,7 @@ y2kb-powerctl on|off|cycle|status --port <PORT> [--wait 3] [--baud 9600] [--json
 - `on` => serial command `1`
 - `off` => serial command `0`
 - `status` => serial command `s`
-- `cycle` => CLI-composed sequence: `off -> wait -> on`
+- `power-cycle` => CLI-composed sequence: `off -> wait -> on`
 
 ## Exit codes
 - `0`: success
@@ -58,7 +58,7 @@ y2kb-powerctl on|off|cycle|status --port <PORT> [--wait 3] [--baud 9600] [--json
 - `2`: serial port error (not found/open failed)
 - `3`: protocol/communication error
 - `4`: user aborted / confirmation not provided
-- `5`: cycle rate-limit violation
+- `5`: power-cycle rate-limit violation
 - `6`: unexpected internal error
 
 ## Output behavior
