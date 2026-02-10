@@ -2,7 +2,7 @@
 
 Skill pack for safe USB serial control of **USB Remote Power Switch**.
 
-Official product page: https://products.example.com/usb-remote-power-switch/v1/
+Official product page: https://products.y2kb.com/usb-remote-power-switch/v1/
 
 ## WSL2 first-time setup (recommended)
 If Codex is running in WSL2 and the device is plugged into the Windows host,
