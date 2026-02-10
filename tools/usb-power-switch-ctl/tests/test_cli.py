@@ -1,12 +1,13 @@
 import io
 import json
+import os
 import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
-from y2kb_powerctl import cli
+from usb_power_switch_ctl import cli
 
 
 FIXED_NOW = datetime(2026, 2, 8, 0, 0, tzinfo=timezone.utc)
@@ -172,7 +173,7 @@ class CliTests(unittest.TestCase):
             log_file = Path(tmp) / "powerctl.log"
             fake_stdin = mock.Mock()
             fake_stdin.isatty.return_value = False
-            with mock.patch("y2kb_powerctl.cli.sys.stdin", fake_stdin):
+            with mock.patch("usb_power_switch_ctl.cli.sys.stdin", fake_stdin):
                 code = cli.main(
                     [
                         "off",
@@ -209,7 +210,7 @@ class CliTests(unittest.TestCase):
             stamp_file = cli.cycle_stamp_path(log_file)
             stamp_file.parent.mkdir(parents=True, exist_ok=True)
             stamp_file.write_text("999.000000", encoding="utf-8")
-            with mock.patch("y2kb_powerctl.cli.time.time", return_value=1000.0):
+            with mock.patch("usb_power_switch_ctl.cli.time.time", return_value=1000.0):
                 code = cli.main(
                     [
                         "power-cycle",
@@ -237,6 +238,71 @@ class CliTests(unittest.TestCase):
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["error"]["code"], "cycle_rate_limited")
         self.assertEqual(fake_transport.writes, ["s"])
+
+    def test_log_file_falls_back_when_primary_write_fails(self) -> None:
+        primary_log = Path("/tmp/primary-powerctl.log")
+        fallback_log = Path("/tmp/fallback-powerctl.log")
+        fake_transport = FakeTransport(["1"])
+
+        def fake_factory(**_: object) -> FakeTransport:
+            return fake_transport
+
+        def fake_append(log_file: Path, payload: dict[str, object]) -> None:
+            if log_file == primary_log:
+                raise PermissionError("primary denied")
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with mock.patch("usb_power_switch_ctl.cli.append_jsonl_log", side_effect=fake_append):
+            with mock.patch("usb_power_switch_ctl.cli.fallback_log_file", return_value=fallback_log):
+                code = cli.main(
+                    [
+                        "status",
+                        "--port",
+                        "COM9",
+                        "--json",
+                        "--log-file",
+                        str(primary_log),
+                    ],
+                    output_stream=stdout,
+                    error_stream=stderr,
+                    transport_factory=fake_factory,
+                    now_fn=lambda: FIXED_NOW,
+                )
+
+        self.assertEqual(code, cli.EXIT_OK)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["log_file"], str(fallback_log))
+        self.assertEqual(stderr.getvalue().strip(), "")
+
+    def test_log_file_can_be_set_by_environment_variable(self) -> None:
+        fake_transport = FakeTransport(["0"])
+
+        def fake_factory(**_: object) -> FakeTransport:
+            return fake_transport
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            env_log_file = str(Path(tmp) / "env-powerctl.log")
+            with mock.patch.dict(os.environ, {cli.LOG_FILE_ENV_VAR: env_log_file}, clear=False):
+                code = cli.main(
+                    [
+                        "status",
+                        "--port",
+                        "COM9",
+                        "--json",
+                    ],
+                    output_stream=stdout,
+                    error_stream=stderr,
+                    transport_factory=fake_factory,
+                    now_fn=lambda: FIXED_NOW,
+                )
+
+        self.assertEqual(code, cli.EXIT_OK)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["log_file"], env_log_file)
+        self.assertEqual(stderr.getvalue().strip(), "")
 
 
 if __name__ == "__main__":

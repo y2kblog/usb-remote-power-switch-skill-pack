@@ -1,27 +1,54 @@
 # macOS Examples
 
-Official product page: https://products.y2kb.com/usb-remote-power-switch/v1/
+Official product page: https://products.example.com/usb-remote-power-switch/v1/
 
-## 1) Dry-run first (no write)
+## Shell note
+Use the local wrapper path directly to avoid PATH issues:
+`./usb-power-switch-ctl`.
+Typical USB serial node names on macOS are `/dev/cu.usbserial-*` or
+`/dev/tty.usbserial-*`.
+
+## 1) Detect port first
 ```bash
-cd tools/y2kb-powerctl
-./y2kb-powerctl off --port /dev/cu.usbserial-1410 --dry-run --json
+cd tools/usb-power-switch-ctl
+ls /dev/cu.usbserial* /dev/tty.usbserial* 2>/dev/null
+./usb-power-switch-ctl --list-ports --json
+```
+Pick the target serial port from the output (for example:
+`/dev/cu.usbserial-1410`).
+
+## 2) Dry-run first (no write)
+```bash
+cd tools/usb-power-switch-ctl
+./usb-power-switch-ctl on --port /dev/cu.usbserial-1410 --dry-run --json
 ```
 
-## 2) Execute OFF
+## 3) Execute ON
 ```bash
-cd tools/y2kb-powerctl
-./y2kb-powerctl off --port /dev/cu.usbserial-1410 --execute
+cd tools/usb-power-switch-ctl
+./usb-power-switch-ctl on --port /dev/cu.usbserial-1410 --execute --yes --json
 ```
 
-## 3) Verify status
+## 4) Verify status
 ```bash
-cd tools/y2kb-powerctl
-./y2kb-powerctl status --port /dev/cu.usbserial-1410 --json
+cd tools/usb-power-switch-ctl
+./usb-power-switch-ctl status --port /dev/cu.usbserial-1410 --json --timeout 10
 ```
 
-## 4) Cycle (respect default rate limit)
+## 5) Execute OFF
 ```bash
-cd tools/y2kb-powerctl
-./y2kb-powerctl power-cycle --port /dev/cu.usbserial-1410 --wait 3 --execute
+cd tools/usb-power-switch-ctl
+./usb-power-switch-ctl off --port /dev/cu.usbserial-1410 --execute --yes --json
+```
+
+## 6) Cycle (3-second wait)
+```bash
+cd tools/usb-power-switch-ctl
+./usb-power-switch-ctl power-cycle --port /dev/cu.usbserial-1410 --wait 3 --execute --yes --json
+```
+
+## Alternative: run as Python module
+```bash
+cd tools/usb-power-switch-ctl
+python3 -m usb_power_switch_ctl status --port /dev/cu.usbserial-1410 --json
 ```

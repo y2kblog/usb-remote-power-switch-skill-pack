@@ -2,7 +2,7 @@
 set -u
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CLI_DIR="$ROOT_DIR/tools/y2kb-powerctl"
+CLI_DIR="$ROOT_DIR/tools/usb-power-switch-ctl"
 
 ok_count=0
 warn_count=0
@@ -27,7 +27,7 @@ mark_fail() {
   printf '[FAIL] %s\n' "$1"
 }
 
-say "== y2kb-powerctl WSL2 preflight =="
+say "== usb-power-switch-ctl WSL2 preflight =="
 
 if grep -qi microsoft /proc/version 2>/dev/null; then
   mark_ok "Running inside WSL environment."
@@ -68,16 +68,16 @@ else
 fi
 
 cli_cmd=()
-if [ -x "$CLI_DIR/.venv/bin/y2kb-powerctl" ]; then
-  cli_cmd=("$CLI_DIR/.venv/bin/y2kb-powerctl")
-  mark_ok "Found CLI in local venv: $CLI_DIR/.venv/bin/y2kb-powerctl"
-elif command -v y2kb-powerctl >/dev/null 2>&1; then
-  cli_cmd=("$(command -v y2kb-powerctl)")
+if [ -x "$CLI_DIR/.venv/bin/usb-power-switch-ctl" ]; then
+  cli_cmd=("$CLI_DIR/.venv/bin/usb-power-switch-ctl")
+  mark_ok "Found CLI in local venv: $CLI_DIR/.venv/bin/usb-power-switch-ctl"
+elif command -v usb-power-switch-ctl >/dev/null 2>&1; then
+  cli_cmd=("$(command -v usb-power-switch-ctl)")
   mark_ok "Found CLI on PATH: ${cli_cmd[0]}"
 else
-  mark_fail "y2kb-powerctl is not installed."
+  mark_fail "usb-power-switch-ctl is not installed."
   say "       Install in WSL:"
-  say "       cd tools/y2kb-powerctl"
+  say "       cd tools/usb-power-switch-ctl"
   say "       python3 -m venv .venv && . .venv/bin/activate && python -m pip install -e ."
 fi
 
@@ -107,7 +107,7 @@ if [ "$fail_count" -gt 0 ]; then
 fi
 
 if [ "$warn_count" -gt 0 ]; then
-  say "Next: review WARN items and proceed with y2kb-powerctl status test."
+  say "Next: review WARN items and proceed with usb-power-switch-ctl status test."
 else
-  say "Preflight passed. You can run y2kb-powerctl status --port <PORT> --json"
+  say "Preflight passed. You can run usb-power-switch-ctl status --port <PORT> --json"
 fi

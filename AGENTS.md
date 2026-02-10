@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This repository is a skill pack for controlling Y2KB-037 via USB serial.
+This repository is a skill pack for controlling a USB remote power switch via USB serial.
 
 ## Goal
 - Keep side-effectful power actions safe and deterministic.
@@ -9,32 +9,32 @@ This repository is a skill pack for controlling Y2KB-037 via USB serial.
 ## Structure
 - `SKILL.md`: main skill contract
 - `examples/`: OS-specific command examples
-- `tools/y2kb-powerctl/`: bundled control CLI and tests
+- `tools/usb-power-switch-ctl/`: bundled control CLI and tests
 
 ## Setup
 ```bash
-cd tools/y2kb-powerctl
+cd tools/usb-power-switch-ctl
 python3 -m pip install -e .
 ```
 
 If editable install is not desired:
 ```bash
-cd tools/y2kb-powerctl
+cd tools/usb-power-switch-ctl
 python3 -m pip install pyserial
 ```
 
 ## Validate
 ```bash
-cd tools/y2kb-powerctl
+cd tools/usb-power-switch-ctl
 python3 -m unittest discover -s tests -v
 ```
 
 ## Safe execution baseline
-1. `y2kb-powerctl --list-ports`
-2. `y2kb-powerctl status --port <PORT> --json`
-3. `y2kb-powerctl on --port <PORT> --dry-run --json`
-4. `y2kb-powerctl on --port <PORT> --execute`
-5. `y2kb-powerctl status --port <PORT> --json`
+1. `usb-power-switch-ctl --list-ports`
+2. `usb-power-switch-ctl status --port <PORT> --json`
+3. `usb-power-switch-ctl on --port <PORT> --dry-run --json`
+4. `usb-power-switch-ctl on --port <PORT> --execute`
+5. `usb-power-switch-ctl status --port <PORT> --json`
 
 ## Safety invariants
 - `--dry-run` is default.
