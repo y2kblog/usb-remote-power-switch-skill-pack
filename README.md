@@ -16,6 +16,9 @@ set up USB passthrough first so the serial device appears as `/dev/ttyUSB*` or
    bash scripts/wsl2-preflight.sh
    ```
 
+The repository enforces LF line endings for shell scripts through
+`.gitattributes`, including on Windows checkouts.
+
 Detailed guide: `docs/wsl2-setup.md`
 
 ## Included
