@@ -81,6 +81,7 @@ usb-power-switch-ctl on|off|power-cycle|status --port <PORT> [--wait 3] [--baud 
 - `dry_run=true` means no state-changing serial write. A `status` query is
   read-only and is also identified by `read_only=true`.
 - Text output includes `log_file=<actual path>`, including when logging falls back to a temporary directory.
+- Command results report `audit_logged=true` only after the JSONL audit record is written successfully; check for `false` before relying on the reported log path.
 - Text output includes the result note and each attempted action so partial
   failures and recovery attempts remain visible without `--json`.
 - Text values are escaped before display so serial responses cannot inject

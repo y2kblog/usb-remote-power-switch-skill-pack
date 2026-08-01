@@ -110,6 +110,151 @@ class CliTests(unittest.TestCase):
                     "invalid_arguments",
                 )
 
+    def test_resolve_port_escapes_control_characters_in_candidates(self) -> None:
+        candidate = cli.CandidatePort(
+            device="COM9\x1b]0;owned\x07",
+            description="USB serial\nforged",
+        )
+        output: list[str] = []
+
+        with mock.patch.object(cli.sys.stdin, "isatty", return_value=True):
+            selected = cli.resolve_port(
+                explicit_port=None,
+                detect_ports_fn=lambda: [candidate],
+                input_fn=lambda _: "1",
+                output_fn=output.append,
+            )
+
+        rendered = "\n".join(output)
+        self.assertEqual(selected, candidate.device)
+        self.assertIn("\\u001b]0;owned\\u0007", rendered)
+        self.assertIn("USB serial\\nforged", rendered)
+        self.assertNotIn("\x1b", rendered)
+        self.assertNotIn("\nforged", rendered.replace("\\nforged", ""))
+
+    def test_print_ports_escapes_control_characters_in_text_output(self) -> None:
+        candidate = cli.CandidatePort(
+            device="COM9\x1b]0;owned\x07",
+            description="USB serial\nforged",
+        )
+        output: list[str] = []
+
+        args = cli.parse_args(["--list-ports"])
+        args.log_file = Path("list-ports.log")
+        with mock.patch.object(
+            cli,
+            "append_jsonl_log_best_effort",
+            return_value=(args.log_file, True),
+        ):
+            exit_code = cli.print_ports(
+                args=args,
+                output_fn=output.append,
+                detect_ports_fn=lambda: [candidate],
+            )
+
+        rendered = "\n".join(output)
+        self.assertEqual(exit_code, cli.EXIT_OK)
+        self.assertIn("\\u001b]0;owned\\u0007", rendered)
+        self.assertIn("USB serial\\nforged", rendered)
+        self.assertNotIn("\x1b", rendered)
+        self.assertNotIn("\nforged", rendered.replace("\\nforged", ""))
+        self.assertIn("audit_logged=True", rendered)
+
+    def test_list_ports_json_records_audit_result(self) -> None:
+        candidate = cli.CandidatePort(device="COM9", description="USB serial")
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log_file = Path(tmp) / "list-ports.log"
+            code = cli.main(
+                ["--list-ports", "--json", "--log-file", str(log_file)],
+                output_stream=stdout,
+                error_stream=stderr,
+                detect_ports_fn=lambda: [candidate],
+                now_fn=lambda: FIXED_NOW,
+            )
+            log_record = json.loads(log_file.read_text(encoding="utf-8"))
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(code, cli.EXIT_OK)
+        self.assertTrue(payload["audit_logged"])
+        self.assertEqual(payload["log_file"], str(log_file))
+        self.assertTrue(log_record["audit_logged"])
+        self.assertEqual(log_record["command"], "list-ports")
+        self.assertEqual(stderr.getvalue().strip(), "")
+
+    def test_list_ports_json_reports_audit_failure(self) -> None:
+        primary_log = Path("/tmp/list-ports-primary.log")
+        fallback_log = Path("/tmp/list-ports-fallback.log")
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with mock.patch.object(
+            cli,
+            "append_jsonl_log",
+            side_effect=UnicodeError("audit encoding failed"),
+        ):
+            with mock.patch.object(
+                cli,
+                "fallback_log_file",
+                return_value=fallback_log,
+            ):
+                code = cli.main(
+                    ["--list-ports", "--json", "--log-file", str(primary_log)],
+                    output_stream=stdout,
+                    error_stream=stderr,
+                    detect_ports_fn=lambda: [],
+                    now_fn=lambda: FIXED_NOW,
+                )
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(code, cli.EXIT_OK)
+        self.assertFalse(payload["audit_logged"])
+        self.assertEqual(payload["log_file"], str(primary_log))
+        self.assertEqual(stderr.getvalue().strip(), "")
+
+    def test_internal_error_keeps_audit_schema_when_logging_crashes(self) -> None:
+        log_file = Path("/tmp/list-ports.log")
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with mock.patch.object(
+            cli,
+            "append_jsonl_log_best_effort",
+            side_effect=RuntimeError("unexpected audit failure"),
+        ):
+            code = cli.main(
+                ["--list-ports", "--json", "--log-file", str(log_file)],
+                output_stream=stdout,
+                error_stream=stderr,
+                detect_ports_fn=lambda: [],
+                now_fn=lambda: FIXED_NOW,
+            )
+
+        payload = json.loads(stderr.getvalue())
+        self.assertEqual(code, cli.EXIT_INTERNAL)
+        self.assertEqual(stdout.getvalue().strip(), "")
+        self.assertFalse(payload["audit_logged"])
+        self.assertEqual(payload["log_file"], str(log_file))
+        self.assertEqual(payload["error"]["code"], "internal_error")
+
+    def test_confirmation_prompt_escapes_control_characters(self) -> None:
+        prompts: list[str] = []
+
+        with mock.patch.object(cli.sys.stdin, "isatty", return_value=True):
+            cli.confirm_execute(
+                command="on",
+                port="COM9\x1b]0;owned\x07\nforged",
+                state_before="off",
+                input_fn=lambda prompt: prompts.append(prompt) or "yes",
+            )
+
+        self.assertEqual(len(prompts), 1)
+        self.assertIn("\\u001b]0;owned\\u0007\\nforged", prompts[0])
+        self.assertNotIn("\x1b", prompts[0])
+        self.assertNotIn("\nforged", prompts[0].replace("\\nforged", ""))
+
     def test_main_json_input_error_uses_public_error_contract(self) -> None:
         stdout = io.StringIO()
         stderr = io.StringIO()
@@ -242,6 +387,7 @@ class CliTests(unittest.TestCase):
             "state_after",
             "actions",
             "log_file",
+            "audit_logged",
             "error",
         }
         self.assertTrue(required_keys.issubset(payload.keys()))
@@ -249,6 +395,7 @@ class CliTests(unittest.TestCase):
         self.assertTrue(payload["read_only"])
         self.assertEqual(payload["state_before"], "on")
         self.assertEqual(payload["state_after"], "on")
+        self.assertTrue(payload["audit_logged"])
         self.assertIn("read-only status query", payload["note"])
         self.assertEqual(fake_transport.writes, ["s"])
         self.assertEqual(stderr.getvalue().strip(), "")
@@ -292,6 +439,7 @@ class CliTests(unittest.TestCase):
         output = cli.format_text_result(payload)
 
         self.assertIn("read_only=True", output)
+        self.assertIn("audit_logged=None", output)
         self.assertIn('note="read-only status query"', output)
         self.assertIn('action step="status" tx="s"', output)
         self.assertIn("\\u001b]0;owned\\u0007\\nforged", output)
@@ -1073,6 +1221,85 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, cli.EXIT_OK)
         payload = json.loads(stdout.getvalue())
         self.assertEqual(payload["log_file"], str(fallback_log))
+        self.assertTrue(payload["audit_logged"])
+        self.assertEqual(stderr.getvalue().strip(), "")
+
+    def test_special_file_log_path_falls_back_to_regular_file(self) -> None:
+        special_log = Path("NUL") if os.name == "nt" else Path("/dev/null")
+        fake_transport = FakeTransport(["1"])
+
+        def fake_factory(**_: object) -> FakeTransport:
+            return fake_transport
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            fallback_log = Path(tmp) / "fallback-powerctl.log"
+            with mock.patch.object(
+                cli,
+                "fallback_log_file",
+                return_value=fallback_log,
+            ):
+                code = cli.main(
+                    [
+                        "status",
+                        "--port",
+                        "COM9",
+                        "--json",
+                        "--log-file",
+                        str(special_log),
+                    ],
+                    output_stream=stdout,
+                    error_stream=stderr,
+                    transport_factory=fake_factory,
+                    now_fn=lambda: FIXED_NOW,
+                )
+            log_record = json.loads(fallback_log.read_text(encoding="utf-8"))
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(code, cli.EXIT_OK)
+        self.assertEqual(payload["log_file"], str(fallback_log))
+        self.assertTrue(payload["audit_logged"])
+        self.assertTrue(log_record["audit_logged"])
+        self.assertEqual(stderr.getvalue().strip(), "")
+
+    def test_result_reports_when_primary_and_fallback_logs_fail(self) -> None:
+        primary_log = Path("/tmp/primary-powerctl.log")
+        fallback_log = Path("/tmp/fallback-powerctl.log")
+        fake_transport = FakeTransport(["1"])
+
+        def fake_factory(**_: object) -> FakeTransport:
+            return fake_transport
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with mock.patch(
+            "usb_power_switch_ctl.cli.append_jsonl_log",
+            side_effect=PermissionError("audit denied"),
+        ):
+            with mock.patch(
+                "usb_power_switch_ctl.cli.fallback_log_file",
+                return_value=fallback_log,
+            ):
+                code = cli.main(
+                    [
+                        "status",
+                        "--port",
+                        "COM9",
+                        "--json",
+                        "--log-file",
+                        str(primary_log),
+                    ],
+                    output_stream=stdout,
+                    error_stream=stderr,
+                    transport_factory=fake_factory,
+                    now_fn=lambda: FIXED_NOW,
+                )
+
+        self.assertEqual(code, cli.EXIT_OK)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["log_file"], str(primary_log))
+        self.assertFalse(payload["audit_logged"])
         self.assertEqual(stderr.getvalue().strip(), "")
 
     def test_text_output_reports_fallback_log_file(self) -> None:
@@ -1114,9 +1341,8 @@ class CliTests(unittest.TestCase):
                     )
 
         self.assertEqual(code, cli.EXIT_OK)
-        expected_log_line = "log_file=" + json.dumps(
-            str(fallback_log),
-            ensure_ascii=True,
+        expected_log_line = "log_file={log_file} audit_logged=True".format(
+            log_file=json.dumps(str(fallback_log), ensure_ascii=True),
         )
         self.assertIn(expected_log_line, stdout.getvalue().splitlines())
         self.assertEqual(stderr.getvalue().strip(), "")

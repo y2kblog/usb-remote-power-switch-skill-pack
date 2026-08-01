@@ -55,6 +55,9 @@ Input errors use exit code `1`. With `--json`, input errors use the same structu
 error payload and JSONL audit log as runtime errors.
 Text output includes the result note and every attempted action, including
 recovery attempts that did not receive a response.
+Command results include `audit_logged=true` only when the JSONL audit record was
+written to the reported primary or fallback `log_file`; otherwise they report
+`audit_logged=false`.
 Long options must be written in full; abbreviations such as `--e` for
 `--execute` are rejected. Input-error audit records use a stable generic
 message instead of copying raw invalid values.

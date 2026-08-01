@@ -7,6 +7,7 @@ import importlib
 import json
 import math
 import os
+import stat
 import sys
 import tempfile
 import time
@@ -105,6 +106,7 @@ class CommandResult:
             "actions": [entry.to_dict() for entry in self.actions],
             "note": self.note,
             "log_file": str(log_file),
+            "audit_logged": None,
             "error": error,
         }
 
@@ -366,7 +368,10 @@ def resolve_port(
     output_fn("Detected serial port candidates:")
     for index, candidate in enumerate(candidates, start=1):
         details = candidate.description.strip() or "n/a"
-        output_fn(f"[{index}] {candidate.device} - {details}")
+        output_fn(
+            f"[{index}] {format_text_value(candidate.device)} - "
+            f"{format_text_value(details)}"
+        )
     if not sys.stdin.isatty():
         raise PowerCtlError(
             "Interactive selection is required. Re-run with --port <PORT>.",
@@ -408,7 +413,8 @@ def confirm_execute(
             "confirmation_required",
         )
     prompt = (
-        f"Execute '{command}' on {port}? current_state={state_note} [y/N]: "
+        f"Execute {format_text_value(command)} on {format_text_value(port)}? "
+        f"current_state={format_text_value(state_note)} [y/N]: "
     )
     answer = input_fn(prompt).strip().lower()
     if answer not in {"y", "yes"}:
@@ -744,35 +750,49 @@ def to_rfc3339(value: datetime) -> str:
 
 def append_jsonl_log(log_file: Path, payload: dict[str, object]) -> None:
     log_file.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        existing_mode = log_file.stat().st_mode
+    except FileNotFoundError:
+        pass
+    else:
+        if not stat.S_ISREG(existing_mode):
+            raise OSError(errno.EINVAL, "Audit log path must be a regular file")
     record = dict(payload)
     record["logged_at"] = to_rfc3339(datetime.now(timezone.utc))
     with log_file.open("a", encoding="utf-8") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise OSError(errno.EINVAL, "Audit log path must be a regular file")
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def append_jsonl_log_best_effort(log_file: Path, payload: dict[str, object]) -> Path:
+def append_jsonl_log_best_effort(
+    log_file: Path,
+    payload: dict[str, object],
+) -> tuple[Path, bool]:
     payload_for_log = dict(payload)
     payload_for_log["log_file"] = str(log_file)
+    payload_for_log["audit_logged"] = True
     try:
         append_jsonl_log(log_file, payload_for_log)
-        return log_file
-    except OSError:
+        return log_file, True
+    except (OSError, UnicodeError):
         pass
 
     try:
         fallback = fallback_log_file()
-    except OSError:
-        return log_file
+    except (OSError, UnicodeError):
+        return log_file, False
     if fallback == log_file:
-        return log_file
+        return log_file, False
     payload_for_log = dict(payload)
     payload_for_log["log_file"] = str(fallback)
+    payload_for_log["audit_logged"] = True
     try:
         append_jsonl_log(fallback, payload_for_log)
-        return fallback
-    except OSError:
+        return fallback, True
+    except (OSError, UnicodeError):
         pass
-    return log_file
+    return log_file, False
 
 
 def run_command(
@@ -1012,7 +1032,12 @@ def print_ports(
             }
             for candidate in ports
         ],
+        "log_file": str(args.log_file),
+        "audit_logged": None,
     }
+    used_log_file, audit_logged = append_jsonl_log_best_effort(args.log_file, payload)
+    payload["log_file"] = str(used_log_file)
+    payload["audit_logged"] = audit_logged
     if args.json:
         output_fn(json.dumps(payload, ensure_ascii=False))
     else:
@@ -1022,7 +1047,16 @@ def print_ports(
             output_fn("Detected serial ports:")
             for candidate in ports:
                 description = candidate.description or "n/a"
-                output_fn(f"- {candidate.device} ({description})")
+                output_fn(
+                    f"- {format_text_value(candidate.device)} "
+                    f"({format_text_value(description)})"
+                )
+        output_fn(
+            "log_file={log_file} audit_logged={audit_logged}".format(
+                log_file=format_text_value(payload["log_file"]),
+                audit_logged=payload["audit_logged"],
+            )
+        )
     return EXIT_OK
 
 
@@ -1053,7 +1087,12 @@ def format_text_result(payload: dict[str, object]) -> str:
             after=format_text_value(payload.get("state_after")),
         )
     )
-    lines.append(f"log_file={format_text_value(payload.get('log_file'))}")
+    lines.append(
+        "log_file={log_file} audit_logged={audit_logged}".format(
+            log_file=format_text_value(payload.get("log_file")),
+            audit_logged=payload.get("audit_logged"),
+        )
+    )
     note = payload.get("note")
     if note:
         lines.append(f"note={format_text_value(note)}")
@@ -1105,8 +1144,9 @@ def emit_error_result(
             "message": str(exc),
         },
     )
-    used_log_file = append_jsonl_log_best_effort(log_file, payload)
+    used_log_file, audit_logged = append_jsonl_log_best_effort(log_file, payload)
     payload["log_file"] = str(used_log_file)
+    payload["audit_logged"] = audit_logged
     if json_output:
         error_fn(json.dumps(payload, ensure_ascii=False))
     else:
@@ -1163,10 +1203,14 @@ def main(
         )
     args.log_file = pick_log_file(args.log_file)
 
-    if args.list_ports:
-        return print_ports(args=args, output_fn=output_fn, detect_ports_fn=detect_ports_fn)
-
     try:
+        if args.list_ports:
+            return print_ports(
+                args=args,
+                output_fn=output_fn,
+                detect_ports_fn=detect_ports_fn,
+            )
+
         result = run_command(
             args,
             input_fn=input_fn,
@@ -1181,8 +1225,9 @@ def main(
             log_file=args.log_file,
             error=None,
         )
-        used_log_file = append_jsonl_log_best_effort(args.log_file, payload)
+        used_log_file, audit_logged = append_jsonl_log_best_effort(args.log_file, payload)
         payload["log_file"] = str(used_log_file)
+        payload["audit_logged"] = audit_logged
         if args.json:
             output_fn(json.dumps(payload, ensure_ascii=False))
         else:
@@ -1212,13 +1257,15 @@ def main(
             "schema_version": "1.0",
             "ok": False,
             "exit_code": EXIT_INTERNAL,
+            "log_file": str(args.log_file),
+            "audit_logged": False,
             "error": {
                 "code": "internal_error",
                 "message": str(exc),
             },
         }
         if args.json:
-            error_fn(json.dumps(payload, ensure_ascii=False))
+            error_fn(json.dumps(payload, ensure_ascii=True))
         else:
-            error_fn(str(payload))
+            error_fn(json.dumps(payload, ensure_ascii=True, sort_keys=True))
         return EXIT_INTERNAL
