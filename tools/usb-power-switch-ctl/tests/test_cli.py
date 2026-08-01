@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import stat
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -207,30 +208,34 @@ class CliTests(unittest.TestCase):
         stderr = io.StringIO()
         with tempfile.TemporaryDirectory() as tmp:
             log_file = Path(tmp) / "powerctl.log"
-            stamp_file = cli.cycle_stamp_path(log_file)
+            stamp_file = Path(tmp) / "last_cycle_epoch.txt"
             stamp_file.parent.mkdir(parents=True, exist_ok=True)
             stamp_file.write_text("999.000000", encoding="utf-8")
-            with mock.patch("usb_power_switch_ctl.cli.time.time", return_value=1000.0):
-                code = cli.main(
-                    [
-                        "power-cycle",
-                        "--port",
-                        "COM9",
-                        "--execute",
-                        "--yes",
-                        "--wait",
-                        "0",
-                        "--min-cycle-interval",
-                        "5",
-                        "--json",
-                        "--log-file",
-                        str(log_file),
-                    ],
-                    output_stream=stdout,
-                    error_stream=stderr,
-                    transport_factory=fake_factory,
-                    now_fn=lambda: FIXED_NOW,
-                )
+            with mock.patch(
+                "usb_power_switch_ctl.cli.cycle_stamp_path",
+                return_value=stamp_file,
+            ):
+                with mock.patch("usb_power_switch_ctl.cli.time.time", return_value=1000.0):
+                    code = cli.main(
+                        [
+                            "power-cycle",
+                            "--port",
+                            "COM9",
+                            "--execute",
+                            "--yes",
+                            "--wait",
+                            "0",
+                            "--min-cycle-interval",
+                            "5",
+                            "--json",
+                            "--log-file",
+                            str(log_file),
+                        ],
+                        output_stream=stdout,
+                        error_stream=stderr,
+                        transport_factory=fake_factory,
+                        now_fn=lambda: FIXED_NOW,
+                    )
 
         self.assertEqual(code, cli.EXIT_RATE_LIMIT)
         self.assertEqual(stdout.getvalue().strip(), "")
@@ -238,6 +243,86 @@ class CliTests(unittest.TestCase):
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["error"]["code"], "cycle_rate_limited")
         self.assertEqual(fake_transport.writes, ["s"])
+
+    def test_cycle_rate_limit_survives_log_path_switch(self) -> None:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            fallback_log = Path(tmp) / "fallback-powerctl.log"
+            primary_log = Path(tmp) / "primary-powerctl.log"
+            home_root = Path(tmp) / "home"
+            transports = [
+                FakeTransport(["1", "ACK", "ACK", "1"]),
+                FakeTransport(["1"]),
+            ]
+            stamp_files: list[Path] = []
+
+            def fake_factory(**_: object) -> FakeTransport:
+                return transports.pop(0)
+
+            with mock.patch("usb_power_switch_ctl.cli.Path.home", return_value=home_root):
+                with mock.patch(
+                    "usb_power_switch_ctl.cli.time.time",
+                    side_effect=[1000.0, 1001.0],
+                ):
+                    first_code = cli.main(
+                        [
+                            "power-cycle",
+                            "--port",
+                            "COM9",
+                            "--execute",
+                            "--yes",
+                            "--wait",
+                            "0",
+                            "--min-cycle-interval",
+                            "5",
+                            "--json",
+                            "--log-file",
+                            str(fallback_log),
+                        ],
+                        output_stream=stdout,
+                        error_stream=stderr,
+                        transport_factory=fake_factory,
+                        now_fn=lambda: FIXED_NOW,
+                    )
+                    second_code = cli.main(
+                        [
+                            "power-cycle",
+                            "--port",
+                            "COM9",
+                            "--execute",
+                            "--yes",
+                            "--wait",
+                            "0",
+                            "--min-cycle-interval",
+                            "5",
+                            "--json",
+                            "--log-file",
+                            str(primary_log),
+                        ],
+                        output_stream=stdout,
+                        error_stream=stderr,
+                        transport_factory=fake_factory,
+                        now_fn=lambda: FIXED_NOW,
+                    )
+                stamp_files = list(home_root.rglob("last_cycle_epoch.txt"))
+
+        self.assertEqual(first_code, cli.EXIT_OK)
+        self.assertEqual(second_code, cli.EXIT_RATE_LIMIT)
+        self.assertEqual(transports, [])
+        self.assertEqual(len(stamp_files), 1)
+
+    def test_fallback_log_file_uses_private_temp_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(cli, "_fallback_log_dir", None):
+                with mock.patch.object(cli.tempfile, "gettempdir", return_value=tmp):
+                    fallback_log = cli.fallback_log_file()
+
+            self.assertEqual(fallback_log.parent.parent, Path(tmp))
+            self.assertTrue(fallback_log.parent.name.startswith(f"{cli.APP_NAME}-"))
+            mode = stat.S_IMODE(fallback_log.parent.stat().st_mode)
+            if os.name != "nt":
+                self.assertEqual(mode & 0o077, 0)
 
     def test_log_file_falls_back_when_primary_write_fails(self) -> None:
         primary_log = Path("/tmp/primary-powerctl.log")

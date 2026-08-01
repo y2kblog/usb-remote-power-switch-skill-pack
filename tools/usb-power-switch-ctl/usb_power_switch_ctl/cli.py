@@ -38,6 +38,8 @@ SIDE_EFFECT_COMMANDS = {"on", "off", "power-cycle"}
 WIRE_COMMANDS = {"on": "1", "off": "0", "status": "s"}
 KNOWN_PORT_HINTS = ("ch340", "ch341", "wch", "usb serial", "ttyusb", "ttyacm")
 
+_fallback_log_dir: Path | None = None
+
 
 @dataclass
 class CandidatePort:
@@ -408,8 +410,15 @@ def predict_state_after(command: str, state_before: str | None) -> str | None:
     return None
 
 
-def cycle_stamp_path(log_file: Path) -> Path:
-    return log_file.parent / "last_cycle_epoch.txt"
+def cycle_stamp_path() -> Path:
+    """Return the stable, user-scoped state path for power-cycle rate limiting."""
+    if os.name == "nt":
+        root = Path.home() / "AppData" / "Local"
+    elif sys.platform == "darwin":
+        root = Path.home() / "Library" / "Application Support"
+    else:
+        root = Path.home() / ".local" / "state"
+    return root / APP_NAME / "last_cycle_epoch.txt"
 
 
 def enforce_cycle_rate_limit(
@@ -437,7 +446,11 @@ def enforce_cycle_rate_limit(
 
 
 def write_cycle_stamp(stamp_file: Path, now_epoch: float) -> None:
-    stamp_file.parent.mkdir(parents=True, exist_ok=True)
+    stamp_file.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        stamp_file.parent.chmod(0o700)
+    except OSError:
+        pass
     stamp_file.write_text(f"{now_epoch:.6f}", encoding="utf-8")
 
 
@@ -460,7 +473,15 @@ def default_log_file() -> Path:
 
 
 def fallback_log_file() -> Path:
-    return Path(tempfile.gettempdir()) / APP_NAME / "powerctl.log"
+    global _fallback_log_dir
+    if _fallback_log_dir is None:
+        _fallback_log_dir = Path(
+            tempfile.mkdtemp(
+                prefix=f"{APP_NAME}-",
+                dir=tempfile.gettempdir(),
+            )
+        )
+    return _fallback_log_dir / "powerctl.log"
 
 
 def pick_log_file(cli_log_file: Path | None) -> Path:
@@ -476,18 +497,26 @@ def pick_log_file(cli_log_file: Path | None) -> Path:
 
 
 def pick_writable_log_file(preferred: Path) -> Path:
-    candidates = [preferred]
-    fallback = fallback_log_file()
+    try:
+        preferred.parent.mkdir(parents=True, exist_ok=True)
+        with preferred.open("a", encoding="utf-8"):
+            pass
+        return preferred
+    except OSError:
+        pass
+
+    try:
+        fallback = fallback_log_file()
+    except OSError:
+        return preferred
     if fallback != preferred:
-        candidates.append(fallback)
-    for candidate in candidates:
         try:
-            candidate.parent.mkdir(parents=True, exist_ok=True)
-            with candidate.open("a", encoding="utf-8"):
+            fallback.parent.mkdir(parents=True, exist_ok=True)
+            with fallback.open("a", encoding="utf-8"):
                 pass
-            return candidate
+            return fallback
         except OSError:
-            continue
+            pass
     return preferred
 
 
@@ -504,18 +533,27 @@ def append_jsonl_log(log_file: Path, payload: dict[str, object]) -> None:
 
 
 def append_jsonl_log_best_effort(log_file: Path, payload: dict[str, object]) -> Path:
-    candidates = [log_file]
-    fallback = fallback_log_file()
-    if fallback != log_file:
-        candidates.append(fallback)
-    for candidate in candidates:
-        payload_for_log = dict(payload)
-        payload_for_log["log_file"] = str(candidate)
-        try:
-            append_jsonl_log(candidate, payload_for_log)
-            return candidate
-        except OSError:
-            continue
+    payload_for_log = dict(payload)
+    payload_for_log["log_file"] = str(log_file)
+    try:
+        append_jsonl_log(log_file, payload_for_log)
+        return log_file
+    except OSError:
+        pass
+
+    try:
+        fallback = fallback_log_file()
+    except OSError:
+        return log_file
+    if fallback == log_file:
+        return log_file
+    payload_for_log = dict(payload)
+    payload_for_log["log_file"] = str(fallback)
+    try:
+        append_jsonl_log(fallback, payload_for_log)
+        return fallback
+    except OSError:
+        pass
     return log_file
 
 
@@ -592,7 +630,7 @@ def run_command(
             )
 
         if command == "power-cycle":
-            stamp_file = cycle_stamp_path(args.log_file)
+            stamp_file = cycle_stamp_path()
             now_epoch = time.time()
             enforce_cycle_rate_limit(
                 stamp_file=stamp_file,

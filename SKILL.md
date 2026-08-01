@@ -73,7 +73,8 @@ usb-power-switch-ctl on|off|power-cycle|status --port <PORT> [--wait 3] [--baud 
 - Linux: `~/.local/state/usb-power-switch-powerctl/powerctl.log` (`XDG_STATE_HOME` preferred)
 - macOS: `~/Library/Logs/usb-power-switch-powerctl/powerctl.log`
 - Windows: `%LOCALAPPDATA%\\usb-power-switch-powerctl\\powerctl.log`
-- If default path is not writable, automatically falls back to temp directory.
+- If default path is not writable, automatically falls back to a user-private temp subdirectory.
+- Power-cycle rate-limit state is stored separately in a fixed per-user state path and does not follow log-path changes.
 - Optional override for all commands: `USB_POWER_SWITCH_LOG_FILE`
 
 ## Troubleshooting

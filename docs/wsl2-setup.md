@@ -95,8 +95,10 @@ Optional (recommended for restricted/sandboxed environments):
 export USB_POWER_SWITCH_LOG_FILE=/tmp/usb-power-switch-powerctl.log
 ```
 
-The CLI now falls back to a temp-directory log path automatically when the
-default log path is not writable.
+The CLI now falls back to a user-private temp-subdirectory log path automatically
+when the default log path is not writable. Power-cycle rate-limit state remains in
+a separate fixed per-user state path, so changing log availability does not reset
+the rate limit.
 
 After read/status checks succeed, you can execute side-effect commands with
 `--execute`.
@@ -135,4 +137,4 @@ This script checks:
 
 - `Permission denied` while writing log file
   - Set `USB_POWER_SWITCH_LOG_FILE=/tmp/usb-power-switch-powerctl.log` and retry.
-  - The CLI also attempts automatic temp-path fallback.
+  - The CLI also attempts automatic fallback to a user-private temp subdirectory.

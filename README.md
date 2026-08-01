@@ -40,7 +40,8 @@ usb-power-switch-ctl on --port <PORT> --dry-run --json
 - Side-effect operations require explicit `--execute`
 - Pre-execution status check and confirmation prompt
 - Power-cycle command rate-limiting
-- If default log path is not writable, logging falls back to system temp dir
+- If default log path is not writable, logging falls back to a user-private temp subdirectory
+- Power-cycle rate-limit state is stored separately in a fixed per-user state path
 
 ## Log path override
 - You can pin the log path for all commands with environment variable:
