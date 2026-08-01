@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import glob
+import importlib
 import json
+import math
 import os
 import sys
 import tempfile
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import BinaryIO, Callable, Iterator, Sequence
 
 try:
     import serial  # type: ignore[import-not-found]
@@ -105,10 +109,18 @@ class CommandResult:
 
 
 class PowerCtlError(Exception):
-    def __init__(self, message: str, exit_code: int, error_code: str) -> None:
+    def __init__(
+        self,
+        message: str,
+        exit_code: int,
+        error_code: str,
+        *,
+        result: CommandResult | None = None,
+    ) -> None:
         super().__init__(message)
         self.exit_code = exit_code
         self.error_code = error_code
+        self.result = result
 
 
 class PySerialTransport:
@@ -179,7 +191,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--wait",
-        type=float,
+        type=finite_float,
         default=DEFAULT_WAIT_SECONDS,
         help=f"Wait seconds for power-cycle command (default: {DEFAULT_WAIT_SECONDS})",
     )
@@ -191,7 +203,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--timeout",
-        type=float,
+        type=finite_float,
         default=DEFAULT_TIMEOUT_SECONDS,
         help=f"Read/write timeout seconds (default: {DEFAULT_TIMEOUT_SECONDS})",
     )
@@ -231,7 +243,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--min-cycle-interval",
-        type=float,
+        type=finite_float,
         default=DEFAULT_MIN_CYCLE_INTERVAL_SECONDS,
         help=(
             "Minimum seconds between execute power-cycle commands "
@@ -252,9 +264,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("--timeout must be > 0")
     if args.baud <= 0:
         parser.error("--baud must be > 0")
-    if args.min_cycle_interval < 0:
-        parser.error("--min-cycle-interval must be >= 0")
+    if args.min_cycle_interval <= 0:
+        parser.error("--min-cycle-interval must be > 0")
     return args
+
+
+def finite_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise argparse.ArgumentTypeError("value must be finite")
+    return parsed
 
 
 def detect_ports() -> list[CandidatePort]:
@@ -365,9 +384,23 @@ def confirm_execute(
         raise PowerCtlError("Operation cancelled by user.", EXIT_ABORTED, "user_cancelled")
 
 
+def exchange_with_action(
+    transport: PySerialTransport,
+    actions: list[ActionEntry],
+    *,
+    step: str,
+    tx: str,
+) -> str:
+    entry = ActionEntry(step=step, tx=tx, note="attempted; no response")
+    actions.append(entry)
+    response = transport.exchange(tx)
+    entry.rx = response
+    entry.note = None
+    return response
+
+
 def query_state(transport: PySerialTransport, actions: list[ActionEntry], step: str) -> str:
-    response = transport.exchange("s")
-    actions.append(ActionEntry(step=step, tx="s", rx=response))
+    response = exchange_with_action(transport, actions, step=step, tx="s")
     return parse_state(response)
 
 
@@ -429,37 +462,183 @@ def cycle_stamp_path() -> Path:
     return root / APP_NAME / "last_cycle_epoch.txt"
 
 
+def cycle_lock_path(stamp_file: Path) -> Path:
+    return stamp_file.with_name(f"{stamp_file.name}.lock")
+
+
+def prepare_private_state_directory(directory: Path) -> None:
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        directory.chmod(0o700)
+    except OSError:
+        pass
+
+
+def acquire_cycle_lock(handle: BinaryIO) -> None:
+    handle.seek(0, os.SEEK_END)
+    if handle.tell() == 0:
+        handle.write(b"0")
+        handle.flush()
+    handle.seek(0)
+    if os.name == "nt":
+        lock_module = importlib.import_module("msvcrt")
+        lock_module.locking(handle.fileno(), lock_module.LK_NBLCK, 1)
+    else:
+        lock_module = importlib.import_module("fcntl")
+        lock_module.flock(
+            handle.fileno(),
+            lock_module.LOCK_EX | lock_module.LOCK_NB,
+        )
+
+
+def release_cycle_lock(handle: BinaryIO) -> None:
+    handle.seek(0)
+    if os.name == "nt":
+        lock_module = importlib.import_module("msvcrt")
+        lock_module.locking(handle.fileno(), lock_module.LK_UNLCK, 1)
+    else:
+        lock_module = importlib.import_module("fcntl")
+        lock_module.flock(handle.fileno(), lock_module.LOCK_UN)
+
+
+@contextmanager
+def cycle_rate_lock(lock_file: Path) -> Iterator[None]:
+    try:
+        prepare_private_state_directory(lock_file.parent)
+        handle = lock_file.open("a+b")
+    except OSError as exc:
+        raise PowerCtlError(
+            f"Cannot open power-cycle safety state: {exc}",
+            EXIT_INTERNAL,
+            "cycle_state_unavailable",
+        ) from exc
+
+    try:
+        try:
+            acquire_cycle_lock(handle)
+        except OSError as exc:
+            if exc.errno in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                raise PowerCtlError(
+                    "Another power-cycle reservation is in progress.",
+                    EXIT_RATE_LIMIT,
+                    "cycle_reservation_busy",
+                ) from exc
+            raise PowerCtlError(
+                f"Cannot lock power-cycle safety state: {exc}",
+                EXIT_INTERNAL,
+                "cycle_state_unavailable",
+            ) from exc
+        try:
+            yield
+        finally:
+            release_cycle_lock(handle)
+    finally:
+        handle.close()
+
+
 def enforce_cycle_rate_limit(
     *, stamp_file: Path, now_epoch: float, min_interval: float
 ) -> None:
-    if min_interval <= 0:
-        return
+    if not math.isfinite(now_epoch) or not math.isfinite(min_interval) or min_interval <= 0:
+        raise PowerCtlError(
+            "Invalid power-cycle rate-limit parameters.",
+            EXIT_INTERNAL,
+            "cycle_state_invalid",
+        )
     if stamp_file.exists():
         previous = stamp_file.read_text(encoding="utf-8").strip()
-        if previous:
-            try:
-                last_epoch = float(previous)
-            except ValueError:
-                last_epoch = 0.0
-            elapsed = now_epoch - last_epoch
-            if elapsed < min_interval:
-                raise PowerCtlError(
-                    (
-                        "power-cycle rate limit hit: "
-                        f"{elapsed:.2f}s elapsed, minimum is {min_interval:.2f}s"
-                    ),
-                    EXIT_RATE_LIMIT,
-                    "cycle_rate_limited",
-                )
+        try:
+            last_epoch = float(previous)
+        except ValueError as exc:
+            raise PowerCtlError(
+                "Power-cycle safety state is corrupt.",
+                EXIT_INTERNAL,
+                "cycle_state_invalid",
+            ) from exc
+        if not math.isfinite(last_epoch):
+            raise PowerCtlError(
+                "Power-cycle safety state is not finite.",
+                EXIT_INTERNAL,
+                "cycle_state_invalid",
+            )
+        elapsed = now_epoch - last_epoch
+        if elapsed < min_interval:
+            raise PowerCtlError(
+                (
+                    "power-cycle rate limit hit: "
+                    f"{elapsed:.2f}s elapsed, minimum is {min_interval:.2f}s"
+                ),
+                EXIT_RATE_LIMIT,
+                "cycle_rate_limited",
+            )
 
 
 def write_cycle_stamp(stamp_file: Path, now_epoch: float) -> None:
-    stamp_file.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    prepare_private_state_directory(stamp_file.parent)
+    temp_path: Path | None = None
     try:
-        stamp_file.parent.chmod(0o700)
-    except OSError:
-        pass
-    stamp_file.write_text(f"{now_epoch:.6f}", encoding="utf-8")
+        descriptor, temp_name = tempfile.mkstemp(
+            prefix=f".{stamp_file.name}.",
+            dir=stamp_file.parent,
+        )
+        temp_path = Path(temp_name)
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
+            handle.write(f"{now_epoch:.6f}")
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            temp_path.chmod(0o600)
+        except OSError:
+            pass
+        os.replace(temp_path, stamp_file)
+        temp_path = None
+    finally:
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+
+
+@contextmanager
+def reserve_cycle_rate_limit(
+    *, stamp_file: Path, now_epoch: float, min_interval: float
+) -> Iterator[None]:
+    with cycle_rate_lock(cycle_lock_path(stamp_file)):
+        enforce_cycle_rate_limit(
+            stamp_file=stamp_file,
+            now_epoch=now_epoch,
+            min_interval=min_interval,
+        )
+        write_cycle_stamp(stamp_file=stamp_file, now_epoch=now_epoch)
+        yield
+
+
+def recover_cycle_on(
+    transport: PySerialTransport,
+    result: CommandResult,
+) -> None:
+    exchange_with_action(
+        transport,
+        result.actions,
+        step="cycle_recovery_on",
+        tx="1",
+    )
+    result.state_after = query_state(
+        transport,
+        result.actions,
+        step="status_after_recovery",
+    )
+    if result.state_after != "on":
+        raise PowerCtlError(
+            (
+                "Power-cycle recovery verification failed: "
+                f"expected on, got {result.state_after}"
+            ),
+            EXIT_PROTOCOL,
+            "cycle_recovery_failed",
+            result=result,
+        )
 
 
 def default_log_file() -> Path:
@@ -590,90 +769,192 @@ def run_command(
     if selected_port is None:
         selected_port = "(not-selected)"
 
-    requested_at = now_fn()
-    actions: list[ActionEntry] = []
-
-    if command == "status":
-        transport = transport_factory(port=selected_port, baud=args.baud, timeout=args.timeout)
-        try:
-            current = query_state(transport, actions, step="status")
-        finally:
-            transport.close()
-        return CommandResult(
+    try:
+        result = CommandResult(
             command=command,
             dry_run=args.dry_run,
             port=selected_port,
             baud=args.baud,
             wait_seconds=args.wait,
-            requested_at=requested_at,
-            state_before=current,
-            state_after=current,
-            actions=actions,
+            requested_at=now_fn(),
+            state_before=None,
+            state_after=None,
+            actions=[],
         )
 
-    if args.dry_run:
-        actions.extend(planned_actions(command, args.wait))
-        return CommandResult(
-            command=command,
-            dry_run=True,
+        if command == "status":
+            transport = transport_factory(
+                port=selected_port,
+                baud=args.baud,
+                timeout=args.timeout,
+            )
+            try:
+                current = query_state(transport, result.actions, step="status")
+                result.state_before = current
+                result.state_after = current
+            finally:
+                transport.close()
+            return result
+
+        if args.dry_run:
+            result.actions.extend(planned_actions(command, args.wait))
+            result.state_after = predict_state_after(command, None)
+            result.note = "dry-run mode; no serial writes were performed"
+            return result
+
+        transport = transport_factory(
             port=selected_port,
             baud=args.baud,
-            wait_seconds=args.wait,
-            requested_at=requested_at,
-            state_before=None,
-            state_after=predict_state_after(command, None),
-            actions=actions,
-            note="dry-run mode; no serial writes were performed",
+            timeout=args.timeout,
         )
-
-    transport = transport_factory(port=selected_port, baud=args.baud, timeout=args.timeout)
-    try:
-        state_before = query_state(transport, actions, step="status_before")
-        if not args.yes:
-            confirm_execute(
-                command=command,
-                port=selected_port,
-                state_before=state_before,
-                input_fn=input_fn,
+        try:
+            result.state_before = query_state(
+                transport,
+                result.actions,
+                step="status_before",
             )
+            if not args.yes:
+                confirm_execute(
+                    command=command,
+                    port=selected_port,
+                    state_before=result.state_before,
+                    input_fn=input_fn,
+                )
 
-        if command == "power-cycle":
-            stamp_file = cycle_stamp_path()
-            now_epoch = time.time()
-            enforce_cycle_rate_limit(
-                stamp_file=stamp_file,
-                now_epoch=now_epoch,
-                min_interval=args.min_cycle_interval,
-            )
-            # Reserve the rate-limit window before the first side effect.
-            # An unwritable state path must fail closed before power is changed.
-            write_cycle_stamp(stamp_file=stamp_file, now_epoch=now_epoch)
-            rx_off = transport.exchange("0")
-            actions.append(ActionEntry(step="cycle_off", tx="0", rx=rx_off))
-            actions.append(ActionEntry(step="cycle_wait", note=f"sleep {args.wait:.2f}s"))
-            time.sleep(args.wait)
-            rx_on = transport.exchange("1")
-            actions.append(ActionEntry(step="cycle_on", tx="1", rx=rx_on))
-        else:
-            tx = WIRE_COMMANDS[command]
-            rx = transport.exchange(tx)
-            actions.append(ActionEntry(step=command, tx=tx, rx=rx))
+            if command == "power-cycle":
+                stamp_file = cycle_stamp_path()
+                with reserve_cycle_rate_limit(
+                    stamp_file=stamp_file,
+                    now_epoch=time.time(),
+                    min_interval=args.min_cycle_interval,
+                ):
+                    try:
+                        exchange_with_action(
+                            transport,
+                            result.actions,
+                            step="cycle_off",
+                            tx="0",
+                        )
+                        result.state_after = query_state(
+                            transport,
+                            result.actions,
+                            step="status_cycle_off",
+                        )
+                        if result.state_after != "off":
+                            raise PowerCtlError(
+                                (
+                                    "Power-cycle OFF verification failed: "
+                                    f"expected off, got {result.state_after}"
+                                ),
+                                EXIT_PROTOCOL,
+                                "cycle_off_verification_failed",
+                                result=result,
+                            )
+                        result.actions.append(
+                            ActionEntry(
+                                step="cycle_wait",
+                                note=f"sleep {args.wait:.2f}s",
+                            )
+                        )
+                        time.sleep(args.wait)
+                        exchange_with_action(
+                            transport,
+                            result.actions,
+                            step="cycle_on",
+                            tx="1",
+                        )
+                        result.state_after = query_state(
+                            transport,
+                            result.actions,
+                            step="status_after",
+                        )
+                        expected_state = predict_state_after(
+                            command,
+                            result.state_before,
+                        )
+                        if result.state_after != expected_state:
+                            raise PowerCtlError(
+                                (
+                                    f"State verification failed for {command}: "
+                                    f"expected {expected_state}, "
+                                    f"got {result.state_after}"
+                                ),
+                                EXIT_PROTOCOL,
+                                "state_verification_failed",
+                                result=result,
+                            )
+                    except (Exception, KeyboardInterrupt) as exc:
+                        recovery_note: str
+                        try:
+                            recover_cycle_on(transport, result)
+                            recovery_note = "recovery ON verified"
+                        except (Exception, KeyboardInterrupt) as recovery_exc:
+                            recovery_note = (
+                                "recovery ON not verified: "
+                                f"{type(recovery_exc).__name__}: {recovery_exc}"
+                            )
+                        result.note = (
+                            "power-cycle did not complete normally; "
+                            f"{recovery_note}"
+                        )
+                        if isinstance(exc, PowerCtlError):
+                            exc.result = result
+                            raise
+                        if isinstance(exc, KeyboardInterrupt):
+                            raise PowerCtlError(
+                                "Power-cycle interrupted by user.",
+                                EXIT_ABORTED,
+                                "cycle_interrupted",
+                                result=result,
+                            ) from exc
+                        raise PowerCtlError(
+                            f"Power-cycle failed: {exc}",
+                            EXIT_INTERNAL,
+                            "internal_error",
+                            result=result,
+                        ) from exc
+            else:
+                exchange_with_action(
+                    transport,
+                    result.actions,
+                    step=command,
+                    tx=WIRE_COMMANDS[command],
+                )
 
-        state_after = query_state(transport, actions, step="status_after")
-    finally:
-        transport.close()
+                result.state_after = query_state(
+                    transport,
+                    result.actions,
+                    step="status_after",
+                )
+                expected_state = predict_state_after(
+                    command,
+                    result.state_before,
+                )
+                if result.state_after != expected_state:
+                    raise PowerCtlError(
+                        (
+                            f"State verification failed for {command}: "
+                            f"expected {expected_state}, got {result.state_after}"
+                        ),
+                        EXIT_PROTOCOL,
+                        "state_verification_failed",
+                        result=result,
+                    )
+        finally:
+            transport.close()
 
-    return CommandResult(
-        command=command,
-        dry_run=False,
-        port=selected_port,
-        baud=args.baud,
-        wait_seconds=args.wait,
-        requested_at=requested_at,
-        state_before=state_before,
-        state_after=state_after,
-        actions=actions,
-    )
+        return result
+    except PowerCtlError as exc:
+        if exc.result is None and "result" in locals():
+            exc.result = result
+        raise
+    except Exception as exc:
+        raise PowerCtlError(
+            str(exc),
+            EXIT_INTERNAL,
+            "internal_error",
+            result=result if "result" in locals() else None,
+        ) from exc
 
 
 def print_ports(
@@ -788,7 +1069,7 @@ def main(
             output_fn(format_text_result(payload))
         return EXIT_OK
     except PowerCtlError as exc:
-        fallback = CommandResult(
+        error_result = exc.result or CommandResult(
             command=args.command or "unknown",
             dry_run=args.dry_run,
             port=args.port or "(unknown)",
@@ -799,7 +1080,7 @@ def main(
             state_after=None,
             actions=[],
         )
-        payload = fallback.to_payload(
+        payload = error_result.to_payload(
             ok=False,
             exit_code=exc.exit_code,
             log_file=args.log_file,

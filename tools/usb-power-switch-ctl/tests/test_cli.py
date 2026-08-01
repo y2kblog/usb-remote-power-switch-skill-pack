@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import io
 import json
 import os
@@ -15,7 +17,7 @@ FIXED_NOW = datetime(2026, 2, 8, 0, 0, tzinfo=timezone.utc)
 
 
 class FakeTransport:
-    def __init__(self, responses: list[str]) -> None:
+    def __init__(self, responses: list[str | Exception]) -> None:
         self.responses = list(responses)
         self.writes: list[str] = []
         self.closed = False
@@ -23,7 +25,10 @@ class FakeTransport:
     def exchange(self, tx: str) -> str:
         self.writes.append(tx)
         if self.responses:
-            return self.responses.pop(0)
+            response = self.responses.pop(0)
+            if isinstance(response, Exception):
+                raise response
+            return response
         return "1"
 
     def close(self) -> None:
@@ -42,6 +47,40 @@ class CliTests(unittest.TestCase):
     def test_parse_args_rejects_legacy_cycle(self) -> None:
         with self.assertRaises(SystemExit):
             cli.parse_args(["cycle", "--port", "COM3"])
+
+    def test_parse_args_rejects_non_finite_float_options(self) -> None:
+        cases = (
+            ("--wait", "nan"),
+            ("--wait", "inf"),
+            ("--wait", "-inf"),
+            ("--timeout", "nan"),
+            ("--timeout", "inf"),
+            ("--min-cycle-interval", "nan"),
+            ("--min-cycle-interval", "inf"),
+        )
+        for option, value in cases:
+            with self.subTest(option=option, value=value):
+                with self.assertRaises(SystemExit):
+                    cli.parse_args(
+                        [
+                            "power-cycle",
+                            "--port",
+                            "COM3",
+                            f"{option}={value}",
+                        ]
+                    )
+
+    def test_parse_args_rejects_disabled_cycle_rate_limit(self) -> None:
+        with self.assertRaises(SystemExit):
+            cli.parse_args(
+                [
+                    "power-cycle",
+                    "--port",
+                    "COM3",
+                    "--min-cycle-interval",
+                    "0",
+                ]
+            )
 
     def test_dry_run_does_not_open_transport(self) -> None:
         called = {"value": False}
@@ -161,6 +200,46 @@ class CliTests(unittest.TestCase):
         self.assertEqual(payload["state_after"], "on")
         self.assertEqual(fake_transport.writes, ["s", "1", "s"])
         self.assertEqual(stderr.getvalue().strip(), "")
+
+    def test_execute_on_fails_when_verified_state_is_off(self) -> None:
+        fake_transport = FakeTransport(["0", "ACK", "0"])
+
+        def fake_factory(**_: object) -> FakeTransport:
+            return fake_transport
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            log_file = Path(tmp) / "powerctl.log"
+            code = cli.main(
+                [
+                    "on",
+                    "--port",
+                    "COM9",
+                    "--execute",
+                    "--yes",
+                    "--json",
+                    "--log-file",
+                    str(log_file),
+                ],
+                output_stream=stdout,
+                error_stream=stderr,
+                transport_factory=fake_factory,
+                now_fn=lambda: FIXED_NOW,
+            )
+
+        self.assertEqual(code, cli.EXIT_PROTOCOL)
+        self.assertEqual(stdout.getvalue().strip(), "")
+        payload = json.loads(stderr.getvalue())
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"]["code"], "state_verification_failed")
+        self.assertEqual(payload["state_before"], "off")
+        self.assertEqual(payload["state_after"], "off")
+        self.assertEqual(
+            [action["step"] for action in payload["actions"]],
+            ["status_before", "on", "status_after"],
+        )
+        self.assertEqual(fake_transport.writes, ["s", "1", "s"])
 
     def test_execute_without_yes_aborts_when_non_interactive(self) -> None:
         fake_transport = FakeTransport(["1"])
@@ -294,6 +373,423 @@ class CliTests(unittest.TestCase):
         self.assertEqual(fake_transport.writes, ["s"])
         self.assertTrue(fake_transport.closed)
 
+    def test_cycle_corrupt_stamp_blocks_power_side_effects(self) -> None:
+        fake_transport = FakeTransport(["1"])
+
+        def fake_factory(**_: object) -> FakeTransport:
+            return fake_transport
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            log_file = Path(tmp) / "powerctl.log"
+            stamp_file = Path(tmp) / "state" / "last_cycle_epoch.txt"
+            stamp_file.parent.mkdir(parents=True)
+            stamp_file.write_text("not-a-number", encoding="utf-8")
+            with mock.patch(
+                "usb_power_switch_ctl.cli.cycle_stamp_path",
+                return_value=stamp_file,
+            ):
+                with mock.patch(
+                    "usb_power_switch_ctl.cli.time.time",
+                    return_value=1000.0,
+                ):
+                    code = cli.main(
+                        [
+                            "power-cycle",
+                            "--port",
+                            "COM9",
+                            "--execute",
+                            "--yes",
+                            "--wait",
+                            "0",
+                            "--json",
+                            "--log-file",
+                            str(log_file),
+                        ],
+                        output_stream=stdout,
+                        error_stream=stderr,
+                        transport_factory=fake_factory,
+                        now_fn=lambda: FIXED_NOW,
+                    )
+
+        self.assertEqual(code, cli.EXIT_INTERNAL)
+        payload = json.loads(stderr.getvalue())
+        self.assertEqual(payload["error"]["code"], "cycle_state_invalid")
+        self.assertEqual(payload["state_before"], "on")
+        self.assertEqual(
+            [action["step"] for action in payload["actions"]],
+            ["status_before"],
+        )
+        self.assertEqual(fake_transport.writes, ["s"])
+
+    def test_cycle_existing_reservation_blocks_power_side_effects(self) -> None:
+        fake_transport = FakeTransport(["1"])
+
+        def fake_factory(**_: object) -> FakeTransport:
+            return fake_transport
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            log_file = Path(tmp) / "powerctl.log"
+            stamp_file = Path(tmp) / "state" / "last_cycle_epoch.txt"
+            lock_file = cli.cycle_lock_path(stamp_file)
+            with mock.patch(
+                "usb_power_switch_ctl.cli.cycle_stamp_path",
+                return_value=stamp_file,
+            ):
+                with mock.patch(
+                    "usb_power_switch_ctl.cli.time.time",
+                    return_value=1000.0,
+                ):
+                    with cli.cycle_rate_lock(lock_file):
+                        code = cli.main(
+                            [
+                                "power-cycle",
+                                "--port",
+                                "COM9",
+                                "--execute",
+                                "--yes",
+                                "--wait",
+                                "0",
+                                "--json",
+                                "--log-file",
+                                str(log_file),
+                            ],
+                            output_stream=stdout,
+                            error_stream=stderr,
+                            transport_factory=fake_factory,
+                            now_fn=lambda: FIXED_NOW,
+                        )
+
+        self.assertEqual(code, cli.EXIT_RATE_LIMIT)
+        payload = json.loads(stderr.getvalue())
+        self.assertEqual(payload["error"]["code"], "cycle_reservation_busy")
+        self.assertEqual(payload["state_before"], "on")
+        self.assertEqual(fake_transport.writes, ["s"])
+
+    def test_cycle_partial_failure_reports_attempted_actions(self) -> None:
+        fake_transport = FakeTransport(
+            [
+                "1",
+                "ACK",
+                "0",
+                cli.PowerCtlError(
+                    "simulated ON timeout",
+                    cli.EXIT_PROTOCOL,
+                    "device_timeout",
+                ),
+                "ACK",
+                "1",
+            ]
+        )
+
+        def fake_factory(**_: object) -> FakeTransport:
+            return fake_transport
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            log_file = Path(tmp) / "powerctl.log"
+            stamp_file = Path(tmp) / "state" / "last_cycle_epoch.txt"
+            with mock.patch(
+                "usb_power_switch_ctl.cli.cycle_stamp_path",
+                return_value=stamp_file,
+            ):
+                with mock.patch(
+                    "usb_power_switch_ctl.cli.time.time",
+                    return_value=1000.0,
+                ):
+                    code = cli.main(
+                        [
+                            "power-cycle",
+                            "--port",
+                            "COM9",
+                            "--execute",
+                            "--yes",
+                            "--wait",
+                            "0",
+                            "--json",
+                            "--log-file",
+                            str(log_file),
+                        ],
+                        output_stream=stdout,
+                        error_stream=stderr,
+                        transport_factory=fake_factory,
+                        now_fn=lambda: FIXED_NOW,
+                    )
+
+        self.assertEqual(code, cli.EXIT_PROTOCOL)
+        self.assertEqual(stdout.getvalue().strip(), "")
+        payload = json.loads(stderr.getvalue())
+        self.assertEqual(payload["error"]["code"], "device_timeout")
+        self.assertEqual(payload["state_before"], "on")
+        self.assertEqual(payload["state_after"], "on")
+        self.assertIn("recovery ON verified", payload["note"])
+        self.assertEqual(
+            [action["step"] for action in payload["actions"]],
+            [
+                "status_before",
+                "cycle_off",
+                "status_cycle_off",
+                "cycle_wait",
+                "cycle_on",
+                "cycle_recovery_on",
+                "status_after_recovery",
+            ],
+        )
+        self.assertEqual(payload["actions"][4]["tx"], "1")
+        self.assertIsNone(payload["actions"][4]["rx"])
+        self.assertEqual(payload["actions"][4]["note"], "attempted; no response")
+        self.assertEqual(fake_transport.writes, ["s", "0", "s", "1", "1", "s"])
+
+    def test_cycle_recovery_failure_preserves_original_error(self) -> None:
+        fake_transport = FakeTransport(
+            [
+                "1",
+                "ACK",
+                "0",
+                cli.PowerCtlError(
+                    "simulated ON timeout",
+                    cli.EXIT_PROTOCOL,
+                    "device_timeout",
+                ),
+                cli.PowerCtlError(
+                    "simulated recovery failure",
+                    cli.EXIT_PROTOCOL,
+                    "serial_io_failed",
+                ),
+            ]
+        )
+
+        def fake_factory(**_: object) -> FakeTransport:
+            return fake_transport
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            log_file = Path(tmp) / "powerctl.log"
+            stamp_file = Path(tmp) / "state" / "last_cycle_epoch.txt"
+            with mock.patch(
+                "usb_power_switch_ctl.cli.cycle_stamp_path",
+                return_value=stamp_file,
+            ):
+                with mock.patch(
+                    "usb_power_switch_ctl.cli.time.time",
+                    return_value=1000.0,
+                ):
+                    code = cli.main(
+                        [
+                            "power-cycle",
+                            "--port",
+                            "COM9",
+                            "--execute",
+                            "--yes",
+                            "--wait",
+                            "0",
+                            "--json",
+                            "--log-file",
+                            str(log_file),
+                        ],
+                        output_stream=stdout,
+                        error_stream=stderr,
+                        transport_factory=fake_factory,
+                        now_fn=lambda: FIXED_NOW,
+                    )
+
+        self.assertEqual(code, cli.EXIT_PROTOCOL)
+        payload = json.loads(stderr.getvalue())
+        self.assertEqual(payload["error"]["code"], "device_timeout")
+        self.assertEqual(payload["state_before"], "on")
+        self.assertEqual(payload["state_after"], "off")
+        self.assertIn("recovery ON not verified", payload["note"])
+        self.assertEqual(
+            [action["step"] for action in payload["actions"]],
+            [
+                "status_before",
+                "cycle_off",
+                "status_cycle_off",
+                "cycle_wait",
+                "cycle_on",
+                "cycle_recovery_on",
+            ],
+        )
+        self.assertEqual(payload["actions"][-1]["tx"], "1")
+        self.assertIsNone(payload["actions"][-1]["rx"])
+        self.assertEqual(payload["actions"][-1]["note"], "attempted; no response")
+        self.assertEqual(fake_transport.writes, ["s", "0", "s", "1", "1"])
+
+    def test_cycle_holds_reservation_through_state_verification(self) -> None:
+        fake_transport = FakeTransport(["1", "ACK", "0", "ACK", "1"])
+
+        def fake_factory(**_: object) -> FakeTransport:
+            return fake_transport
+
+        lock_errors: list[str] = []
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            log_file = Path(tmp) / "powerctl.log"
+            stamp_file = Path(tmp) / "state" / "last_cycle_epoch.txt"
+
+            def probe_lock(_: float) -> None:
+                try:
+                    with cli.cycle_rate_lock(cli.cycle_lock_path(stamp_file)):
+                        self.fail("concurrent cycle lock must not be acquired")
+                except cli.PowerCtlError as exc:
+                    lock_errors.append(exc.error_code)
+
+            with mock.patch(
+                "usb_power_switch_ctl.cli.cycle_stamp_path",
+                return_value=stamp_file,
+            ):
+                with mock.patch(
+                    "usb_power_switch_ctl.cli.time.time",
+                    return_value=1000.0,
+                ):
+                    with mock.patch(
+                        "usb_power_switch_ctl.cli.time.sleep",
+                        side_effect=probe_lock,
+                    ):
+                        code = cli.main(
+                            [
+                                "power-cycle",
+                                "--port",
+                                "COM9",
+                                "--execute",
+                                "--yes",
+                                "--wait",
+                                "10",
+                                "--min-cycle-interval",
+                                "5",
+                                "--json",
+                                "--log-file",
+                                str(log_file),
+                            ],
+                            output_stream=stdout,
+                            error_stream=stderr,
+                            transport_factory=fake_factory,
+                            now_fn=lambda: FIXED_NOW,
+                        )
+
+        self.assertEqual(code, cli.EXIT_OK)
+        self.assertEqual(lock_errors, ["cycle_reservation_busy"])
+        self.assertEqual(fake_transport.writes, ["s", "0", "s", "1", "s"])
+
+    def test_cycle_interrupt_recovers_on_and_reports_context(self) -> None:
+        fake_transport = FakeTransport(["1", "ACK", "0", "ACK", "1"])
+
+        def fake_factory(**_: object) -> FakeTransport:
+            return fake_transport
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            log_file = Path(tmp) / "powerctl.log"
+            stamp_file = Path(tmp) / "state" / "last_cycle_epoch.txt"
+            with mock.patch(
+                "usb_power_switch_ctl.cli.cycle_stamp_path",
+                return_value=stamp_file,
+            ):
+                with mock.patch(
+                    "usb_power_switch_ctl.cli.time.time",
+                    return_value=1000.0,
+                ):
+                    with mock.patch(
+                        "usb_power_switch_ctl.cli.time.sleep",
+                        side_effect=KeyboardInterrupt,
+                    ):
+                        code = cli.main(
+                            [
+                                "power-cycle",
+                                "--port",
+                                "COM9",
+                                "--execute",
+                                "--yes",
+                                "--wait",
+                                "3",
+                                "--json",
+                                "--log-file",
+                                str(log_file),
+                            ],
+                            output_stream=stdout,
+                            error_stream=stderr,
+                            transport_factory=fake_factory,
+                            now_fn=lambda: FIXED_NOW,
+                        )
+
+        self.assertEqual(code, cli.EXIT_ABORTED)
+        payload = json.loads(stderr.getvalue())
+        self.assertEqual(payload["error"]["code"], "cycle_interrupted")
+        self.assertEqual(payload["state_before"], "on")
+        self.assertEqual(payload["state_after"], "on")
+        self.assertIn("recovery ON verified", payload["note"])
+        self.assertEqual(
+            [action["step"] for action in payload["actions"]],
+            [
+                "status_before",
+                "cycle_off",
+                "status_cycle_off",
+                "cycle_wait",
+                "cycle_recovery_on",
+                "status_after_recovery",
+            ],
+        )
+        self.assertEqual(fake_transport.writes, ["s", "0", "s", "1", "s"])
+
+    def test_cycle_aborts_when_off_state_is_not_verified(self) -> None:
+        fake_transport = FakeTransport(["1", "ACK", "1", "ACK", "1"])
+
+        def fake_factory(**_: object) -> FakeTransport:
+            return fake_transport
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            log_file = Path(tmp) / "powerctl.log"
+            stamp_file = Path(tmp) / "state" / "last_cycle_epoch.txt"
+            with mock.patch(
+                "usb_power_switch_ctl.cli.cycle_stamp_path",
+                return_value=stamp_file,
+            ):
+                with mock.patch(
+                    "usb_power_switch_ctl.cli.time.time",
+                    return_value=1000.0,
+                ):
+                    code = cli.main(
+                        [
+                            "power-cycle",
+                            "--port",
+                            "COM9",
+                            "--execute",
+                            "--yes",
+                            "--wait",
+                            "0",
+                            "--json",
+                            "--log-file",
+                            str(log_file),
+                        ],
+                        output_stream=stdout,
+                        error_stream=stderr,
+                        transport_factory=fake_factory,
+                        now_fn=lambda: FIXED_NOW,
+                    )
+
+        self.assertEqual(code, cli.EXIT_PROTOCOL)
+        payload = json.loads(stderr.getvalue())
+        self.assertEqual(
+            payload["error"]["code"],
+            "cycle_off_verification_failed",
+        )
+        self.assertEqual(payload["state_after"], "on")
+        self.assertNotIn(
+            "cycle_wait",
+            [action["step"] for action in payload["actions"]],
+        )
+        self.assertIn("recovery ON verified", payload["note"])
+        self.assertEqual(fake_transport.writes, ["s", "0", "s", "1", "s"])
+
     def test_cycle_rate_limit_survives_log_path_switch(self) -> None:
         stdout = io.StringIO()
         stderr = io.StringIO()
@@ -302,7 +798,7 @@ class CliTests(unittest.TestCase):
             primary_log = Path(tmp) / "primary-powerctl.log"
             stamp_file = Path(tmp) / "state" / "last_cycle_epoch.txt"
             transports = [
-                FakeTransport(["1", "ACK", "ACK", "1"]),
+                FakeTransport(["1", "ACK", "0", "ACK", "1"]),
                 FakeTransport(["1"]),
             ]
             stamp_files: list[Path] = []
