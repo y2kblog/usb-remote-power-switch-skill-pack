@@ -39,6 +39,27 @@ usb-power-switch-ctl status --port <PORT> --json
 usb-power-switch-ctl on --port <PORT> --dry-run --json
 ```
 
+## Quality checks
+
+Install the development tools and run the same local checks as CI:
+
+```bash
+cd tools/usb-power-switch-ctl
+python -m pip install -e ".[dev]"
+usb-power-switch-ctl --help
+python -I -m unittest discover -s tests -v
+python -m ruff check usb_power_switch_ctl tests
+python -m mypy usb_power_switch_ctl
+python -m coverage run -m unittest discover -s tests -v
+python -m coverage report -m
+python -m pip_audit --progress-spinner off --strict
+bash -n ../../scripts/wsl2-preflight.sh
+```
+
+CI runs the unit tests on Linux, Windows, and macOS with Python 3.9 and 3.13.
+The quality job enforces source branch coverage of at least 70% and runs the
+static, dependency, and shell syntax checks above.
+
 ## Safety defaults
 - `--dry-run` by default for state-changing commands
 - `status` sends only the read-only serial query and reports `read_only=true`

@@ -18,8 +18,8 @@ from pathlib import Path
 from typing import BinaryIO, Callable, Iterator, NoReturn, Sequence
 
 try:
-    import serial  # type: ignore[import-not-found]
-    from serial.tools import list_ports  # type: ignore[import-not-found]
+    import serial  # type: ignore[import-not-found,import-untyped]
+    from serial.tools import list_ports  # type: ignore[import-not-found,import-untyped]
 except Exception:  # pragma: no cover - exercised by environments without pyserial
     serial = None  # type: ignore[assignment]
     list_ports = None  # type: ignore[assignment]
