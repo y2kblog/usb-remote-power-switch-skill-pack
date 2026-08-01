@@ -9,6 +9,9 @@ venv/
 .mypy_cache/
 .coverage
 htmlcov/
+build/
+dist/
+*.egg-info/
 *.log
 .DS_Store
 
@@ -16,3 +19,4 @@ agent_log/
 .prompts.private.noai.md
 .codex/
 .rgignore
+tasks/

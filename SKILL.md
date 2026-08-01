@@ -14,10 +14,12 @@ description: Safely operate the USB Remote Power Switch over USB serial using th
 This skill avoids fragile “raw serial text” operations by routing all control
 through a deterministic CLI.
 
-## Primary source references
-- Official product page: https://products.example.com/usb-remote-power-switch/v1/
-- USB serial settings from the source docs: `9600 8N1`
-- Command line ending: no newline required
+## Repository protocol contract
+- Verification status and exact accepted responses: `docs/protocol.md`
+- USB serial settings enforced by the CLI: `9600 8N1`
+- Command line ending: no newline
+- Do not claim compatibility with a product variant until its manual and hardware
+  behavior have been checked against `docs/protocol.md`.
 
 ## Safety rules (mandatory)
 1. Use CLI only. Do not send raw serial bytes directly from free-form prompts.
@@ -25,15 +27,19 @@ through a deterministic CLI.
 3. For side-effect commands (`on`, `off`, `power-cycle`):
    - read current state first
    - require interactive confirmation unless `--yes` is explicitly set
-4. Keep power-cycle operations rate-limited (default minimum interval: 5s).
+   - verify the expected state after every state change
+4. Keep power-cycle operations rate-limited (default minimum interval: 5s);
+   the interval must be finite and greater than zero.
 5. If port is not specified, show candidates and require explicit selection.
+6. Use full option names. Abbreviated long options are rejected, especially for
+   `--execute` and `--yes`.
 
 ## CLI location
 - `tools/usb-power-switch-ctl/`
 
 ## CLI command
 ```bash
-usb-power-switch-ctl on|off|power-cycle|status --port <PORT> [--wait 3] [--baud 9600] [--json] [--dry-run]
+usb-power-switch-ctl on|off|power-cycle|status --port <PORT> [--wait 3] [--baud 9600] [--json] [--dry-run|--execute]
 ```
 
 ## Canonical operation flow
@@ -50,7 +56,10 @@ usb-power-switch-ctl on|off|power-cycle|status --port <PORT> [--wait 3] [--baud 
 - `on` => serial command `1`
 - `off` => serial command `0`
 - `status` => serial command `s`
-- `power-cycle` => CLI-composed sequence: `off -> wait -> on`
+- `power-cycle` => CLI-composed sequence:
+  `status -> off -> verify off -> wait -> on -> verify on`
+- If a power-cycle fails after OFF is attempted, the CLI performs one ON recovery
+  attempt, verifies the result, and still returns the original operation error.
 
 ## Exit codes
 - `0`: success
@@ -68,12 +77,25 @@ usb-power-switch-ctl on|off|power-cycle|status --port <PORT> [--wait 3] [--baud 
 - Error:
   - text mode: stderr
   - JSON mode (`--json`): stderr JSON
+- Input errors use exit code `1`; `--json` keeps them machine-readable.
+- `dry_run=true` means no state-changing serial write. A `status` query is
+  read-only and is also identified by `read_only=true`.
+- Text output includes `log_file=<actual path>`, including when logging falls back to a temporary directory.
+- Command results report `audit_logged=true` only after the JSONL audit record is written successfully; check for `false` before relying on the reported log path.
+- Text output includes the result note and each attempted action so partial
+  failures and recovery attempts remain visible without `--json`.
+- Text values are escaped before display so serial responses cannot inject
+  terminal control sequences or forged lines.
+- Input-error messages do not echo raw invalid values into the audit log.
 
 ## Log path
 - Linux: `~/.local/state/usb-power-switch-powerctl/powerctl.log` (`XDG_STATE_HOME` preferred)
 - macOS: `~/Library/Logs/usb-power-switch-powerctl/powerctl.log`
 - Windows: `%LOCALAPPDATA%\\usb-power-switch-powerctl\\powerctl.log`
-- If default path is not writable, automatically falls back to temp directory.
+- If default path is not writable, automatically falls back to a user-private temp subdirectory.
+- Power-cycle rate-limit state uses the standard per-user state root (`XDG_STATE_HOME` on Linux and `LOCALAPPDATA` on Windows), but is stored separately and does not follow log-path changes.
+- Rate-limit inspection and reservation are atomic, and an OS lock remains held
+  until the power-cycle and its final verification or recovery complete.
 - Optional override for all commands: `USB_POWER_SWITCH_LOG_FILE`
 
 ## Troubleshooting

@@ -1,6 +1,6 @@
 # Windows Examples
 
-Official product page: https://products.example.com/usb-remote-power-switch/v1/
+Protocol contract: `../docs/protocol.md`
 
 ## PowerShell note
 In PowerShell, commands in the current directory are not auto-discovered.

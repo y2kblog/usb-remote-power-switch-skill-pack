@@ -1,6 +1,6 @@
 # Linux Examples
 
-Official product page: https://products.example.com/usb-remote-power-switch/v1/
+Protocol contract: `../docs/protocol.md`
 
 ## Shell note
 Use the bundled venv binary path directly to avoid PATH issues:

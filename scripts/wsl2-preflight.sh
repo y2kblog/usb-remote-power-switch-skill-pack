@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Keep LF line endings so WSL can execute this file from a Windows checkout.
 set -u
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
