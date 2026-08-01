@@ -9,9 +9,38 @@ description = "CLI for USB Remote Power Switch"
 requires-python = ">=3.9"
 dependencies = ["pyserial>=3.5"]
 
+[project.optional-dependencies]
+dev = [
+    "coverage[toml]>=7.6",
+    "mypy>=1.11,<2",
+    "pip-audit>=2.7",
+    "ruff>=0.8",
+]
+
 [project.scripts]
 usb-power-switch-ctl = "usb_power_switch_ctl.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["usb_power_switch_ctl*"]
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.mypy]
+python_version = "3.9"
+check_untyped_defs = true
+warn_unused_configs = true
+
+[tool.coverage.run]
+branch = true
+source = ["usb_power_switch_ctl"]
+
+[tool.coverage.report]
+fail_under = 70
+show_missing = true
+skip_covered = true

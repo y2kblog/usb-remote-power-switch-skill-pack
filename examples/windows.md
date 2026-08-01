@@ -1,6 +1,6 @@
 # Windows Examples
 
-Official product page: https://products.example.com/usb-remote-power-switch/v1/
+Protocol contract: `../docs/protocol.md`
 
 ## 1) Dry-run first (no write)
 ```powershell

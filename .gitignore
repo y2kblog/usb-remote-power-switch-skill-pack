@@ -8,6 +8,9 @@ venv/
 .mypy_cache/
 .coverage
 htmlcov/
+build/
+dist/
+*.egg-info/
 *.log
 .DS_Store
 
