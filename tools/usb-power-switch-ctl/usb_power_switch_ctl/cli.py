@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import BinaryIO, Callable, Iterator, Sequence
+from typing import BinaryIO, Callable, Iterator, NoReturn, Sequence
 
 try:
     import serial  # type: ignore[import-not-found]
@@ -95,6 +95,7 @@ class CommandResult:
             "exit_code": exit_code,
             "command": self.command,
             "dry_run": self.dry_run,
+            "read_only": self.command == "status",
             "port": self.port,
             "baud": self.baud,
             "wait_seconds": self.wait_seconds,
@@ -174,10 +175,20 @@ class PySerialTransport:
             pass
 
 
+class PowerCtlArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> NoReturn:
+        raise PowerCtlError(
+            "Invalid command-line arguments. Use --help for accepted values.",
+            EXIT_USAGE,
+            "invalid_arguments",
+        )
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = PowerCtlArgumentParser(
         prog="usb-power-switch-ctl",
         description="Control USB Remote Power Switch over USB serial.",
+        allow_abbrev=False,
     )
     parser.add_argument(
         "command",
@@ -217,7 +228,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         dest="dry_run",
-        help="Plan command without writing to device (default behavior)",
+        help=(
+            "Plan without state-changing serial writes "
+            "(default behavior; status remains read-only)"
+        ),
     )
     dry_group.add_argument(
         "--execute",
@@ -269,8 +283,25 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return args
 
 
+def parse_output_options(argv: Sequence[str]) -> tuple[bool, Path | None]:
+    parser = PowerCtlArgumentParser(
+        add_help=False,
+        allow_abbrev=False,
+    )
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--log-file", type=Path)
+    try:
+        options, _ = parser.parse_known_args(argv)
+    except PowerCtlError:
+        return "--json" in argv, None
+    return options.json, options.log_file
+
+
 def finite_float(value: str) -> float:
-    parsed = float(value)
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("value must be a finite number") from exc
     if not math.isfinite(parsed):
         raise argparse.ArgumentTypeError("value must be finite")
     return parsed
@@ -406,9 +437,9 @@ def query_state(transport: PySerialTransport, actions: list[ActionEntry], step: 
 
 def parse_state(response: str) -> str:
     clean = response.strip()
-    if clean.startswith("1"):
+    if clean == "1":
         return "on"
-    if clean.startswith("0"):
+    if clean == "0":
         return "off"
     raise PowerCtlError(
         f"Unexpected state response: {response!r}",
@@ -792,6 +823,10 @@ def run_command(
                 current = query_state(transport, result.actions, step="status")
                 result.state_before = current
                 result.state_after = current
+                result.note = (
+                    "read-only status query; serial query sent, "
+                    "no state-changing write performed"
+                )
             finally:
                 transport.close()
             return result
@@ -994,31 +1029,89 @@ def print_ports(
 def format_text_result(payload: dict[str, object]) -> str:
     lines: list[str] = []
     lines.append(
-        "ok={ok} exit_code={exit_code} command={command} dry_run={dry_run}".format(
+        (
+            "ok={ok} exit_code={exit_code} command={command} "
+            "dry_run={dry_run} read_only={read_only}"
+        ).format(
             ok=payload.get("ok"),
             exit_code=payload.get("exit_code"),
-            command=payload.get("command"),
+            command=format_text_value(payload.get("command")),
             dry_run=payload.get("dry_run"),
+            read_only=payload.get("read_only"),
         )
     )
     lines.append(
         "port={port} baud={baud} wait={wait}".format(
-            port=payload.get("port"),
+            port=format_text_value(payload.get("port")),
             baud=payload.get("baud"),
             wait=payload.get("wait_seconds"),
         )
     )
     lines.append(
         "state_before={before} state_after={after}".format(
-            before=payload.get("state_before"),
-            after=payload.get("state_after"),
+            before=format_text_value(payload.get("state_before")),
+            after=format_text_value(payload.get("state_after")),
         )
     )
-    lines.append(f"log_file={payload.get('log_file')}")
+    lines.append(f"log_file={format_text_value(payload.get('log_file'))}")
+    note = payload.get("note")
+    if note:
+        lines.append(f"note={format_text_value(note)}")
+    actions = payload.get("actions")
+    if isinstance(actions, list):
+        for action in actions:
+            if isinstance(action, dict):
+                lines.append(
+                    "action step={step} tx={tx} rx={rx} note={note}".format(
+                        step=format_text_value(action.get("step")),
+                        tx=format_text_value(action.get("tx")),
+                        rx=format_text_value(action.get("rx")),
+                        note=format_text_value(action.get("note")),
+                    )
+                )
     error = payload.get("error")
     if error:
-        lines.append(f"error={error}")
+        lines.append(
+            "error="
+            + json.dumps(
+                error,
+                ensure_ascii=True,
+                sort_keys=True,
+            )
+        )
     return "\n".join(lines)
+
+
+def format_text_value(value: object) -> str:
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=True)
+    return str(value)
+
+
+def emit_error_result(
+    *,
+    result: CommandResult,
+    exc: PowerCtlError,
+    log_file: Path,
+    json_output: bool,
+    error_fn: Callable[[str], None],
+) -> int:
+    payload = result.to_payload(
+        ok=False,
+        exit_code=exc.exit_code,
+        log_file=log_file,
+        error={
+            "code": exc.error_code,
+            "message": str(exc),
+        },
+    )
+    used_log_file = append_jsonl_log_best_effort(log_file, payload)
+    payload["log_file"] = str(used_log_file)
+    if json_output:
+        error_fn(json.dumps(payload, ensure_ascii=False))
+    else:
+        error_fn(format_text_result(payload))
+    return exc.exit_code
 
 
 def main(
@@ -1035,12 +1128,39 @@ def main(
         output_stream = sys.stdout
     if error_stream is None:
         error_stream = sys.stderr
-    output_fn = lambda text: print(text, file=output_stream)
-    error_fn = lambda text: print(text, file=error_stream)
+
+    def output_fn(text: str) -> None:
+        print(text, file=output_stream)
+
+    def error_fn(text: str) -> None:
+        print(text, file=error_stream)
 
     now_fn = now_fn or (lambda: datetime.now(timezone.utc))
+    raw_argv = list(argv) if argv is not None else sys.argv[1:]
+    json_output, requested_log_file = parse_output_options(raw_argv)
 
-    args = parse_args(argv)
+    try:
+        args = parse_args(raw_argv)
+    except PowerCtlError as exc:
+        log_file = pick_log_file(requested_log_file)
+        parse_error_result = CommandResult(
+            command="unknown",
+            dry_run=True,
+            port="(unknown)",
+            baud=DEFAULT_BAUD,
+            wait_seconds=DEFAULT_WAIT_SECONDS,
+            requested_at=now_fn(),
+            state_before=None,
+            state_after=None,
+            actions=[],
+        )
+        return emit_error_result(
+            result=parse_error_result,
+            exc=exc,
+            log_file=log_file,
+            json_output=json_output,
+            error_fn=error_fn,
+        )
     args.log_file = pick_log_file(args.log_file)
 
     if args.list_ports:
@@ -1080,22 +1200,13 @@ def main(
             state_after=None,
             actions=[],
         )
-        payload = error_result.to_payload(
-            ok=False,
-            exit_code=exc.exit_code,
+        return emit_error_result(
+            result=error_result,
+            exc=exc,
             log_file=args.log_file,
-            error={
-                "code": exc.error_code,
-                "message": str(exc),
-            },
+            json_output=args.json,
+            error_fn=error_fn,
         )
-        used_log_file = append_jsonl_log_best_effort(args.log_file, payload)
-        payload["log_file"] = str(used_log_file)
-        if args.json:
-            error_fn(json.dumps(payload, ensure_ascii=False))
-        else:
-            error_fn(format_text_result(payload))
-        return exc.exit_code
     except Exception as exc:  # pragma: no cover - defensive guard
         payload = {
             "schema_version": "1.0",

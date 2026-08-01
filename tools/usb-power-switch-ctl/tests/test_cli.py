@@ -45,8 +45,10 @@ class CliTests(unittest.TestCase):
         self.assertTrue(args.dry_run)
 
     def test_parse_args_rejects_legacy_cycle(self) -> None:
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(cli.PowerCtlError) as captured:
             cli.parse_args(["cycle", "--port", "COM3"])
+        self.assertEqual(captured.exception.exit_code, cli.EXIT_USAGE)
+        self.assertEqual(captured.exception.error_code, "invalid_arguments")
 
     def test_parse_args_rejects_non_finite_float_options(self) -> None:
         cases = (
@@ -60,7 +62,7 @@ class CliTests(unittest.TestCase):
         )
         for option, value in cases:
             with self.subTest(option=option, value=value):
-                with self.assertRaises(SystemExit):
+                with self.assertRaises(cli.PowerCtlError) as captured:
                     cli.parse_args(
                         [
                             "power-cycle",
@@ -69,9 +71,14 @@ class CliTests(unittest.TestCase):
                             f"{option}={value}",
                         ]
                     )
+                self.assertEqual(captured.exception.exit_code, cli.EXIT_USAGE)
+                self.assertEqual(
+                    captured.exception.error_code,
+                    "invalid_arguments",
+                )
 
     def test_parse_args_rejects_disabled_cycle_rate_limit(self) -> None:
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(cli.PowerCtlError) as captured:
             cli.parse_args(
                 [
                     "power-cycle",
@@ -81,6 +88,83 @@ class CliTests(unittest.TestCase):
                     "0",
                 ]
             )
+        self.assertEqual(captured.exception.exit_code, cli.EXIT_USAGE)
+        self.assertEqual(captured.exception.error_code, "invalid_arguments")
+
+    def test_parse_args_rejects_abbreviated_safety_flags(self) -> None:
+        cases = ("--e", "--exec", "--y", "--js")
+        for option in cases:
+            with self.subTest(option=option):
+                with self.assertRaises(cli.PowerCtlError) as captured:
+                    cli.parse_args(
+                        [
+                            "on",
+                            "--port",
+                            "COM3",
+                            option,
+                        ]
+                    )
+                self.assertEqual(captured.exception.exit_code, cli.EXIT_USAGE)
+                self.assertEqual(
+                    captured.exception.error_code,
+                    "invalid_arguments",
+                )
+
+    def test_main_json_input_error_uses_public_error_contract(self) -> None:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            log_file = Path(tmp) / "input-error.log"
+            code = cli.main(
+                [
+                    "power-cycle",
+                    "--wait=nan",
+                    "--json",
+                    "--log-file",
+                    str(log_file),
+                ],
+                output_stream=stdout,
+                error_stream=stderr,
+                now_fn=lambda: FIXED_NOW,
+            )
+
+            log_record = json.loads(log_file.read_text(encoding="utf-8"))
+
+        self.assertEqual(code, cli.EXIT_USAGE)
+        self.assertEqual(stdout.getvalue().strip(), "")
+        payload = json.loads(stderr.getvalue())
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["exit_code"], cli.EXIT_USAGE)
+        self.assertEqual(payload["error"]["code"], "invalid_arguments")
+        self.assertEqual(payload["command"], "unknown")
+        self.assertEqual(payload["actions"], [])
+        self.assertEqual(payload["log_file"], str(log_file))
+        self.assertEqual(log_record["error"]["code"], "invalid_arguments")
+
+    def test_input_error_does_not_log_raw_invalid_value(self) -> None:
+        raw_value = "do-not-log-this-value"
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            log_file = Path(tmp) / "input-error.log"
+            code = cli.main(
+                [
+                    "on",
+                    "--baud",
+                    raw_value,
+                    "--json",
+                    "--log-file",
+                    str(log_file),
+                ],
+                output_stream=stdout,
+                error_stream=stderr,
+                now_fn=lambda: FIXED_NOW,
+            )
+            logged = log_file.read_text(encoding="utf-8")
+
+        self.assertEqual(code, cli.EXIT_USAGE)
+        self.assertNotIn(raw_value, stderr.getvalue())
+        self.assertNotIn(raw_value, logged)
 
     def test_dry_run_does_not_open_transport(self) -> None:
         called = {"value": False}
@@ -149,6 +233,7 @@ class CliTests(unittest.TestCase):
             "exit_code",
             "command",
             "dry_run",
+            "read_only",
             "port",
             "baud",
             "wait_seconds",
@@ -161,10 +246,57 @@ class CliTests(unittest.TestCase):
         }
         self.assertTrue(required_keys.issubset(payload.keys()))
         self.assertEqual(payload["command"], "status")
+        self.assertTrue(payload["read_only"])
         self.assertEqual(payload["state_before"], "on")
         self.assertEqual(payload["state_after"], "on")
+        self.assertIn("read-only status query", payload["note"])
         self.assertEqual(fake_transport.writes, ["s"])
         self.assertEqual(stderr.getvalue().strip(), "")
+
+    def test_parse_state_rejects_trailing_content(self) -> None:
+        for response in ("1garbage", "0 ACK", "10"):
+            with self.subTest(response=response):
+                with self.assertRaises(cli.PowerCtlError) as captured:
+                    cli.parse_state(response)
+                self.assertEqual(
+                    captured.exception.error_code,
+                    "unexpected_state",
+                )
+
+    def test_text_formatter_reports_read_only_note_and_actions(self) -> None:
+        result = cli.CommandResult(
+            command="status",
+            dry_run=True,
+            port="COM9",
+            baud=cli.DEFAULT_BAUD,
+            wait_seconds=cli.DEFAULT_WAIT_SECONDS,
+            requested_at=FIXED_NOW,
+            state_before="on",
+            state_after="on",
+            actions=[
+                cli.ActionEntry(
+                    step="status",
+                    tx="s",
+                    rx="\x1b]0;owned\x07\nforged",
+                )
+            ],
+            note="read-only status query",
+        )
+        payload = result.to_payload(
+            ok=True,
+            exit_code=cli.EXIT_OK,
+            log_file=Path("powerctl.log"),
+            error=None,
+        )
+
+        output = cli.format_text_result(payload)
+
+        self.assertIn("read_only=True", output)
+        self.assertIn('note="read-only status query"', output)
+        self.assertIn('action step="status" tx="s"', output)
+        self.assertIn("\\u001b]0;owned\\u0007\\nforged", output)
+        self.assertNotIn("\x1b", output)
+        self.assertNotIn("\nforged", output.replace("\\nforged", ""))
 
     def test_execute_on_reads_status_before_write(self) -> None:
         fake_transport = FakeTransport(["0", "ACK", "1"])
@@ -982,7 +1114,11 @@ class CliTests(unittest.TestCase):
                     )
 
         self.assertEqual(code, cli.EXIT_OK)
-        self.assertIn(f"log_file={fallback_log}", stdout.getvalue().splitlines())
+        expected_log_line = "log_file=" + json.dumps(
+            str(fallback_log),
+            ensure_ascii=True,
+        )
+        self.assertIn(expected_log_line, stdout.getvalue().splitlines())
         self.assertEqual(stderr.getvalue().strip(), "")
 
     def test_log_file_can_be_set_by_environment_variable(self) -> None:
