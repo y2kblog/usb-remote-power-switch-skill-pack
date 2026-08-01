@@ -5,6 +5,7 @@ import glob
 import json
 import os
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -18,7 +19,8 @@ except Exception:  # pragma: no cover - exercised by environments without pyseri
     serial = None  # type: ignore[assignment]
     list_ports = None  # type: ignore[assignment]
 
-APP_NAME = "y2kb-powerctl"
+APP_NAME = "usb-power-switch-powerctl"
+LOG_FILE_ENV_VAR = "USB_POWER_SWITCH_LOG_FILE"
 DEFAULT_BAUD = 9600
 DEFAULT_WAIT_SECONDS = 3.0
 DEFAULT_TIMEOUT_SECONDS = 1.0
@@ -35,6 +37,8 @@ EXIT_INTERNAL = 6
 SIDE_EFFECT_COMMANDS = {"on", "off", "power-cycle"}
 WIRE_COMMANDS = {"on": "1", "off": "0", "status": "s"}
 KNOWN_PORT_HINTS = ("ch340", "ch341", "wch", "usb serial", "ttyusb", "ttyacm")
+
+_fallback_log_dir: Path | None = None
 
 
 @dataclass
@@ -160,8 +164,8 @@ class PySerialTransport:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="y2kb-powerctl",
-        description="Control Y2KB USB Remote Power Switch over USB serial.",
+        prog="usb-power-switch-ctl",
+        description="Control USB Remote Power Switch over USB serial.",
     )
     parser.add_argument(
         "command",
@@ -406,8 +410,23 @@ def predict_state_after(command: str, state_before: str | None) -> str | None:
     return None
 
 
-def cycle_stamp_path(log_file: Path) -> Path:
-    return log_file.parent / "last_cycle_epoch.txt"
+def cycle_stamp_path() -> Path:
+    """Return the stable, user-scoped state path for power-cycle rate limiting."""
+    if os.name == "nt":
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            root = Path(local_app_data)
+        else:
+            root = Path.home() / "AppData" / "Local"
+    elif sys.platform == "darwin":
+        root = Path.home() / "Library" / "Application Support"
+    else:
+        state_home = os.environ.get("XDG_STATE_HOME")
+        if state_home:
+            root = Path(state_home)
+        else:
+            root = Path.home() / ".local" / "state"
+    return root / APP_NAME / "last_cycle_epoch.txt"
 
 
 def enforce_cycle_rate_limit(
@@ -435,7 +454,11 @@ def enforce_cycle_rate_limit(
 
 
 def write_cycle_stamp(stamp_file: Path, now_epoch: float) -> None:
-    stamp_file.parent.mkdir(parents=True, exist_ok=True)
+    stamp_file.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        stamp_file.parent.chmod(0o700)
+    except OSError:
+        pass
     stamp_file.write_text(f"{now_epoch:.6f}", encoding="utf-8")
 
 
@@ -457,6 +480,54 @@ def default_log_file() -> Path:
     return root / APP_NAME / "powerctl.log"
 
 
+def fallback_log_file() -> Path:
+    global _fallback_log_dir
+    if _fallback_log_dir is None:
+        _fallback_log_dir = Path(
+            tempfile.mkdtemp(
+                prefix=f"{APP_NAME}-",
+                dir=tempfile.gettempdir(),
+            )
+        )
+    return _fallback_log_dir / "powerctl.log"
+
+
+def pick_log_file(cli_log_file: Path | None) -> Path:
+    if cli_log_file is not None:
+        preferred = cli_log_file
+    else:
+        from_env = os.environ.get(LOG_FILE_ENV_VAR)
+        if from_env:
+            preferred = Path(from_env).expanduser()
+        else:
+            preferred = default_log_file()
+    return pick_writable_log_file(preferred)
+
+
+def pick_writable_log_file(preferred: Path) -> Path:
+    try:
+        preferred.parent.mkdir(parents=True, exist_ok=True)
+        with preferred.open("a", encoding="utf-8"):
+            pass
+        return preferred
+    except OSError:
+        pass
+
+    try:
+        fallback = fallback_log_file()
+    except OSError:
+        return preferred
+    if fallback != preferred:
+        try:
+            fallback.parent.mkdir(parents=True, exist_ok=True)
+            with fallback.open("a", encoding="utf-8"):
+                pass
+            return fallback
+        except OSError:
+            pass
+    return preferred
+
+
 def to_rfc3339(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -467,6 +538,31 @@ def append_jsonl_log(log_file: Path, payload: dict[str, object]) -> None:
     record["logged_at"] = to_rfc3339(datetime.now(timezone.utc))
     with log_file.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def append_jsonl_log_best_effort(log_file: Path, payload: dict[str, object]) -> Path:
+    payload_for_log = dict(payload)
+    payload_for_log["log_file"] = str(log_file)
+    try:
+        append_jsonl_log(log_file, payload_for_log)
+        return log_file
+    except OSError:
+        pass
+
+    try:
+        fallback = fallback_log_file()
+    except OSError:
+        return log_file
+    if fallback == log_file:
+        return log_file
+    payload_for_log = dict(payload)
+    payload_for_log["log_file"] = str(fallback)
+    try:
+        append_jsonl_log(fallback, payload_for_log)
+        return fallback
+    except OSError:
+        pass
+    return log_file
 
 
 def run_command(
@@ -542,20 +638,22 @@ def run_command(
             )
 
         if command == "power-cycle":
-            stamp_file = cycle_stamp_path(args.log_file)
+            stamp_file = cycle_stamp_path()
             now_epoch = time.time()
             enforce_cycle_rate_limit(
                 stamp_file=stamp_file,
                 now_epoch=now_epoch,
                 min_interval=args.min_cycle_interval,
             )
+            # Reserve the rate-limit window before the first side effect.
+            # An unwritable state path must fail closed before power is changed.
+            write_cycle_stamp(stamp_file=stamp_file, now_epoch=now_epoch)
             rx_off = transport.exchange("0")
             actions.append(ActionEntry(step="cycle_off", tx="0", rx=rx_off))
             actions.append(ActionEntry(step="cycle_wait", note=f"sleep {args.wait:.2f}s"))
             time.sleep(args.wait)
             rx_on = transport.exchange("1")
             actions.append(ActionEntry(step="cycle_on", tx="1", rx=rx_on))
-            write_cycle_stamp(stamp_file=stamp_file, now_epoch=now_epoch)
         else:
             tx = WIRE_COMMANDS[command]
             rx = transport.exchange(tx)
@@ -635,6 +733,7 @@ def format_text_result(payload: dict[str, object]) -> str:
             after=payload.get("state_after"),
         )
     )
+    lines.append(f"log_file={payload.get('log_file')}")
     error = payload.get("error")
     if error:
         lines.append(f"error={error}")
@@ -661,7 +760,7 @@ def main(
     now_fn = now_fn or (lambda: datetime.now(timezone.utc))
 
     args = parse_args(argv)
-    args.log_file = args.log_file or default_log_file()
+    args.log_file = pick_log_file(args.log_file)
 
     if args.list_ports:
         return print_ports(args=args, output_fn=output_fn, detect_ports_fn=detect_ports_fn)
@@ -681,7 +780,8 @@ def main(
             log_file=args.log_file,
             error=None,
         )
-        append_jsonl_log(args.log_file, payload)
+        used_log_file = append_jsonl_log_best_effort(args.log_file, payload)
+        payload["log_file"] = str(used_log_file)
         if args.json:
             output_fn(json.dumps(payload, ensure_ascii=False))
         else:
@@ -708,7 +808,8 @@ def main(
                 "message": str(exc),
             },
         )
-        append_jsonl_log(args.log_file, payload)
+        used_log_file = append_jsonl_log_best_effort(args.log_file, payload)
+        payload["log_file"] = str(used_log_file)
         if args.json:
             error_fn(json.dumps(payload, ensure_ascii=False))
         else:

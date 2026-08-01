@@ -1,0 +1,11 @@
+pyproject.toml
+tests/test_cli.py
+usb_power_switch_ctl/__init__.py
+usb_power_switch_ctl/__main__.py
+usb_power_switch_ctl/cli.py
+usb_power_switch_ctl.egg-info/PKG-INFO
+usb_power_switch_ctl.egg-info/SOURCES.txt
+usb_power_switch_ctl.egg-info/dependency_links.txt
+usb_power_switch_ctl.egg-info/entry_points.txt
+usb_power_switch_ctl.egg-info/requires.txt
+usb_power_switch_ctl.egg-info/top_level.txt
