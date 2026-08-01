@@ -12,7 +12,7 @@ dependencies = ["pyserial>=3.5"]
 [project.optional-dependencies]
 dev = [
     "coverage[toml]>=7.6",
-    "mypy>=1.11",
+    "mypy>=1.11,<2",
     "pip-audit>=2.7",
     "ruff>=0.8",
 ]
