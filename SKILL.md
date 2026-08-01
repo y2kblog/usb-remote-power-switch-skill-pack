@@ -68,13 +68,14 @@ usb-power-switch-ctl on|off|power-cycle|status --port <PORT> [--wait 3] [--baud 
 - Error:
   - text mode: stderr
   - JSON mode (`--json`): stderr JSON
+- Text output includes `log_file=<actual path>`, including when logging falls back to a temporary directory.
 
 ## Log path
 - Linux: `~/.local/state/usb-power-switch-powerctl/powerctl.log` (`XDG_STATE_HOME` preferred)
 - macOS: `~/Library/Logs/usb-power-switch-powerctl/powerctl.log`
 - Windows: `%LOCALAPPDATA%\\usb-power-switch-powerctl\\powerctl.log`
 - If default path is not writable, automatically falls back to a user-private temp subdirectory.
-- Power-cycle rate-limit state is stored separately in a fixed per-user state path and does not follow log-path changes.
+- Power-cycle rate-limit state uses the standard per-user state root (`XDG_STATE_HOME` on Linux and `LOCALAPPDATA` on Windows), but is stored separately and does not follow log-path changes.
 - Optional override for all commands: `USB_POWER_SWITCH_LOG_FILE`
 
 ## Troubleshooting

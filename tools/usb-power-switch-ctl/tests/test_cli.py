@@ -5,7 +5,7 @@ import stat
 import tempfile
 import unittest
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from unittest import mock
 
 from usb_power_switch_ctl import cli
@@ -300,7 +300,7 @@ class CliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             fallback_log = Path(tmp) / "fallback-powerctl.log"
             primary_log = Path(tmp) / "primary-powerctl.log"
-            home_root = Path(tmp) / "home"
+            stamp_file = Path(tmp) / "state" / "last_cycle_epoch.txt"
             transports = [
                 FakeTransport(["1", "ACK", "ACK", "1"]),
                 FakeTransport(["1"]),
@@ -310,7 +310,10 @@ class CliTests(unittest.TestCase):
             def fake_factory(**_: object) -> FakeTransport:
                 return transports.pop(0)
 
-            with mock.patch("usb_power_switch_ctl.cli.Path.home", return_value=home_root):
+            with mock.patch(
+                "usb_power_switch_ctl.cli.cycle_stamp_path",
+                return_value=stamp_file,
+            ):
                 with mock.patch(
                     "usb_power_switch_ctl.cli.time.time",
                     side_effect=[1000.0, 1001.0],
@@ -355,12 +358,46 @@ class CliTests(unittest.TestCase):
                         transport_factory=fake_factory,
                         now_fn=lambda: FIXED_NOW,
                     )
-                stamp_files = list(home_root.rglob("last_cycle_epoch.txt"))
+                stamp_files = list(stamp_file.parent.rglob("last_cycle_epoch.txt"))
 
         self.assertEqual(first_code, cli.EXIT_OK)
         self.assertEqual(second_code, cli.EXIT_RATE_LIMIT)
         self.assertEqual(transports, [])
         self.assertEqual(len(stamp_files), 1)
+
+    def test_cycle_stamp_path_uses_standard_state_environment(self) -> None:
+        cases = (
+            (
+                "nt",
+                "win32",
+                "LOCALAPPDATA",
+                r"C:\redirected-state",
+                PureWindowsPath,
+            ),
+            (
+                "posix",
+                "linux",
+                "XDG_STATE_HOME",
+                "/redirected-state",
+                PurePosixPath,
+            ),
+        )
+        for os_name, platform, env_var, root, path_class in cases:
+            with self.subTest(platform=platform):
+                with mock.patch.object(cli.os, "name", os_name):
+                    with mock.patch.object(cli.sys, "platform", platform):
+                        with mock.patch.object(cli, "Path", path_class):
+                            with mock.patch.dict(
+                                os.environ,
+                                {env_var: root},
+                                clear=False,
+                            ):
+                                stamp_file = cli.cycle_stamp_path()
+
+                self.assertEqual(
+                    stamp_file,
+                    path_class(root) / cli.APP_NAME / "last_cycle_epoch.txt",
+                )
 
     def test_fallback_log_file_uses_private_temp_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -408,6 +445,48 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, cli.EXIT_OK)
         payload = json.loads(stdout.getvalue())
         self.assertEqual(payload["log_file"], str(fallback_log))
+        self.assertEqual(stderr.getvalue().strip(), "")
+
+    def test_text_output_reports_fallback_log_file(self) -> None:
+        fake_transport = FakeTransport(["1"])
+
+        def fake_factory(**_: object) -> FakeTransport:
+            return fake_transport
+
+        with tempfile.TemporaryDirectory() as tmp:
+            primary_log = Path(tmp) / "primary-powerctl.log"
+            fallback_log = Path(tmp) / "fallback-powerctl.log"
+
+            def fake_append(log_file: Path, payload: dict[str, object]) -> None:
+                if log_file == primary_log:
+                    raise PermissionError("primary denied")
+
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with mock.patch(
+                "usb_power_switch_ctl.cli.append_jsonl_log",
+                side_effect=fake_append,
+            ):
+                with mock.patch(
+                    "usb_power_switch_ctl.cli.fallback_log_file",
+                    return_value=fallback_log,
+                ):
+                    code = cli.main(
+                        [
+                            "status",
+                            "--port",
+                            "COM9",
+                            "--log-file",
+                            str(primary_log),
+                        ],
+                        output_stream=stdout,
+                        error_stream=stderr,
+                        transport_factory=fake_factory,
+                        now_fn=lambda: FIXED_NOW,
+                    )
+
+        self.assertEqual(code, cli.EXIT_OK)
+        self.assertIn(f"log_file={fallback_log}", stdout.getvalue().splitlines())
         self.assertEqual(stderr.getvalue().strip(), "")
 
     def test_log_file_can_be_set_by_environment_variable(self) -> None:

@@ -413,11 +413,19 @@ def predict_state_after(command: str, state_before: str | None) -> str | None:
 def cycle_stamp_path() -> Path:
     """Return the stable, user-scoped state path for power-cycle rate limiting."""
     if os.name == "nt":
-        root = Path.home() / "AppData" / "Local"
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            root = Path(local_app_data)
+        else:
+            root = Path.home() / "AppData" / "Local"
     elif sys.platform == "darwin":
         root = Path.home() / "Library" / "Application Support"
     else:
-        root = Path.home() / ".local" / "state"
+        state_home = os.environ.get("XDG_STATE_HOME")
+        if state_home:
+            root = Path(state_home)
+        else:
+            root = Path.home() / ".local" / "state"
     return root / APP_NAME / "last_cycle_epoch.txt"
 
 
@@ -725,6 +733,7 @@ def format_text_result(payload: dict[str, object]) -> str:
             after=payload.get("state_after"),
         )
     )
+    lines.append(f"log_file={payload.get('log_file')}")
     error = payload.get("error")
     if error:
         lines.append(f"error={error}")
