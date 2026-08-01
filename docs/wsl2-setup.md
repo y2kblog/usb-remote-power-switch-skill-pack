@@ -89,12 +89,6 @@ usb-power-switch-ctl status --port /dev/ttyUSB0 --json --timeout 3
 usb-power-switch-ctl on --port /dev/ttyUSB0 --dry-run --json
 ```
 
-Optional (recommended for restricted/sandboxed environments):
-
-```bash
-export USB_POWER_SWITCH_LOG_FILE=/tmp/usb-power-switch-powerctl.log
-```
-
 The CLI now falls back to a user-private temp-subdirectory log path automatically
 when the default log path is not writable. Power-cycle rate-limit state remains in
 a separate fixed per-user state path, so changing log availability does not reset
@@ -136,5 +130,5 @@ This script checks:
   - Wrong port, port disappeared, or in use by another process.
 
 - `Permission denied` while writing log file
-  - Set `USB_POWER_SWITCH_LOG_FILE=/tmp/usb-power-switch-powerctl.log` and retry.
-  - The CLI also attempts automatic fallback to a user-private temp subdirectory.
+  - Unset `USB_POWER_SWITCH_LOG_FILE` if it points to an unwritable location and retry.
+  - The CLI automatically attempts fallback to a user-private temp subdirectory.

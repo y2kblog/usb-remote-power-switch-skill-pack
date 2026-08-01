@@ -637,13 +637,15 @@ def run_command(
                 now_epoch=now_epoch,
                 min_interval=args.min_cycle_interval,
             )
+            # Reserve the rate-limit window before the first side effect.
+            # An unwritable state path must fail closed before power is changed.
+            write_cycle_stamp(stamp_file=stamp_file, now_epoch=now_epoch)
             rx_off = transport.exchange("0")
             actions.append(ActionEntry(step="cycle_off", tx="0", rx=rx_off))
             actions.append(ActionEntry(step="cycle_wait", note=f"sleep {args.wait:.2f}s"))
             time.sleep(args.wait)
             rx_on = transport.exchange("1")
             actions.append(ActionEntry(step="cycle_on", tx="1", rx=rx_on))
-            write_cycle_stamp(stamp_file=stamp_file, now_epoch=now_epoch)
         else:
             tx = WIRE_COMMANDS[command]
             rx = transport.exchange(tx)

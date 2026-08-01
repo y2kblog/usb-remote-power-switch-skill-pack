@@ -44,6 +44,6 @@ usb-power-switch-ctl on --port <PORT> --dry-run --json
 - Power-cycle rate-limit state is stored separately in a fixed per-user state path
 
 ## Log path override
-- You can pin the log path for all commands with environment variable:
-  - Linux/macOS: `export USB_POWER_SWITCH_LOG_FILE=/tmp/usb-power-switch-powerctl.log`
-  - Windows PowerShell: `$env:USB_POWER_SWITCH_LOG_FILE = "$env:TEMP\\usb-power-switch-powerctl.log"`
+- You can pin the log path for all commands with `USB_POWER_SWITCH_LOG_FILE`.
+- Use a path inside a user-owned private directory; do not use a predictable file in a shared temporary directory.
+- If the variable is unset and the default path is unwritable, the CLI automatically uses a user-private temporary subdirectory.

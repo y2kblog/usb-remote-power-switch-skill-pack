@@ -244,6 +244,56 @@ class CliTests(unittest.TestCase):
         self.assertEqual(payload["error"]["code"], "cycle_rate_limited")
         self.assertEqual(fake_transport.writes, ["s"])
 
+    def test_cycle_stamp_write_failure_blocks_power_side_effects(self) -> None:
+        fake_transport = FakeTransport(["1"])
+
+        def fake_factory(**_: object) -> FakeTransport:
+            return fake_transport
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            log_file = Path(tmp) / "powerctl.log"
+            stamp_file = Path(tmp) / "state" / "last_cycle_epoch.txt"
+            with mock.patch(
+                "usb_power_switch_ctl.cli.cycle_stamp_path",
+                return_value=stamp_file,
+            ):
+                with mock.patch(
+                    "usb_power_switch_ctl.cli.write_cycle_stamp",
+                    side_effect=PermissionError("state path is read-only"),
+                ):
+                    with mock.patch(
+                        "usb_power_switch_ctl.cli.time.time",
+                        return_value=1000.0,
+                    ):
+                        code = cli.main(
+                            [
+                                "power-cycle",
+                                "--port",
+                                "COM9",
+                                "--execute",
+                                "--yes",
+                                "--wait",
+                                "0",
+                                "--json",
+                                "--log-file",
+                                str(log_file),
+                            ],
+                            output_stream=stdout,
+                            error_stream=stderr,
+                            transport_factory=fake_factory,
+                            now_fn=lambda: FIXED_NOW,
+                        )
+
+        self.assertEqual(code, cli.EXIT_INTERNAL)
+        self.assertEqual(stdout.getvalue().strip(), "")
+        payload = json.loads(stderr.getvalue())
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"]["code"], "internal_error")
+        self.assertEqual(fake_transport.writes, ["s"])
+        self.assertTrue(fake_transport.closed)
+
     def test_cycle_rate_limit_survives_log_path_switch(self) -> None:
         stdout = io.StringIO()
         stderr = io.StringIO()
