@@ -1,0 +1,205 @@
+from __future__ import annotations
+
+import importlib.util
+import io
+import json
+import sys
+import tempfile
+import unittest
+from contextlib import redirect_stdout
+from pathlib import Path
+from unittest import mock
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+BOOTSTRAP_PATH = REPOSITORY_ROOT / "scripts" / "bootstrap.py"
+SPEC = importlib.util.spec_from_file_location("usb_power_switch_bootstrap", BOOTSTRAP_PATH)
+assert SPEC is not None
+assert SPEC.loader is not None
+bootstrap_module = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = bootstrap_module
+SPEC.loader.exec_module(bootstrap_module)
+
+
+class BootstrapTests(unittest.TestCase):
+    def make_minimal_skill_source(self, parent: Path) -> Path:
+        source = parent / "source"
+        source.mkdir()
+        for name in bootstrap_module.COPY_ROOT_FILES:
+            (source / name).write_text(name, encoding="utf-8")
+        for name in bootstrap_module.COPY_ROOT_DIRECTORIES:
+            (source / name).mkdir()
+        return source
+
+    def test_parse_args_uses_default_venv(self) -> None:
+        args = bootstrap_module.parse_args([])
+
+        self.assertEqual(args.venv_dir, bootstrap_module.DEFAULT_VENV_DIR)
+        self.assertIsNone(args.install_to)
+
+    def test_venv_python_path_uses_platform_layout(self) -> None:
+        venv_dir = Path("example-venv")
+        with mock.patch.object(bootstrap_module.sys, "platform", "win32"):
+            self.assertEqual(
+                bootstrap_module.venv_python_path(venv_dir),
+                venv_dir / "Scripts" / "python.exe",
+            )
+        with mock.patch.object(bootstrap_module.sys, "platform", "linux"):
+            self.assertEqual(
+                bootstrap_module.venv_python_path(venv_dir),
+                venv_dir / "bin" / "python",
+            )
+
+    def test_parse_probe_output_accepts_successful_list_ports_payload(self) -> None:
+        payload = {"ok": True, "command": "list-ports", "ports": [{"device": "COM3"}]}
+
+        self.assertEqual(bootstrap_module.parse_probe_output(json.dumps(payload)), 1)
+
+    def test_parse_probe_output_rejects_non_list_ports_payload(self) -> None:
+        with self.assertRaisesRegex(ValueError, "successful list-ports"):
+            bootstrap_module.parse_probe_output('{"ok": true, "command": "status"}')
+
+    def test_bootstrap_reuses_venv_and_runs_only_install_and_safe_probe(self) -> None:
+        calls: list[tuple[list[str], Path]] = []
+
+        def fake_runner(command: list[str], cwd: Path) -> object:
+            calls.append((list(command), cwd))
+            if "pip" in command:
+                return bootstrap_module.CommandOutcome(0, "installed", "")
+            return bootstrap_module.CommandOutcome(
+                0,
+                json.dumps({"ok": True, "command": "list-ports", "ports": []}),
+                "",
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            venv_dir = Path(tmp) / "venv"
+            python_path = bootstrap_module.venv_python_path(venv_dir)
+            python_path.parent.mkdir(parents=True)
+            python_path.touch()
+            output = io.StringIO()
+
+            with redirect_stdout(output):
+                result = bootstrap_module.bootstrap(venv_dir, run_command=fake_runner)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("pip", calls[0][0])
+        self.assertEqual(
+            calls[1][0][-2:],
+            ["--list-ports", "--json"],
+        )
+        self.assertNotIn("--execute", calls[1][0])
+        self.assertIn("No device was selected or modified", output.getvalue())
+
+    def test_bootstrap_refuses_to_overwrite_incomplete_venv(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            venv_dir = Path(tmp) / "venv"
+            venv_dir.mkdir()
+            output = io.StringIO()
+
+            with redirect_stdout(output):
+                result = bootstrap_module.bootstrap(venv_dir)
+
+        self.assertEqual(result, 1)
+        self.assertIn("inspect or remove that directory manually", output.getvalue())
+
+    def test_bootstrap_reports_unstartable_existing_venv(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            venv_dir = Path(tmp) / "venv"
+            python_path = bootstrap_module.venv_python_path(venv_dir)
+            python_path.parent.mkdir(parents=True)
+            python_path.touch()
+            output = io.StringIO()
+
+            with redirect_stdout(output):
+                result = bootstrap_module.bootstrap(
+                    venv_dir,
+                    run_command=mock.Mock(side_effect=OSError("not executable")),
+                )
+
+        self.assertEqual(result, 1)
+        self.assertIn("Could not start bundled CLI installation", output.getvalue())
+
+    def test_install_skill_copies_only_distributable_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            source = self.make_minimal_skill_source(parent)
+            (source / "tools" / ".venv").mkdir()
+            (source / "tools" / ".venv" / "python").write_text("ignored", encoding="utf-8")
+            (source / "scripts" / "bootstrap.py").write_text("script", encoding="utf-8")
+            target = parent / "installed-skill"
+
+            result = bootstrap_module.install_skill(target, source_root=source)
+
+            self.assertEqual(result, target)
+            self.assertTrue((target / "SKILL.md").is_file())
+            self.assertTrue((target / "scripts" / "bootstrap.py").is_file())
+            self.assertFalse((target / "tools" / ".venv").exists())
+            self.assertFalse((target / "AGENTS.md").exists())
+
+    def test_install_skill_creates_missing_target_parents(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            source = self.make_minimal_skill_source(parent)
+            target = parent / "agent" / "skills" / "installed-skill"
+
+            result = bootstrap_module.install_skill(target, source_root=source)
+
+            self.assertEqual(result, target)
+            self.assertTrue((target / "SKILL.md").is_file())
+
+    def test_install_skill_rejects_relative_or_existing_target(self) -> None:
+        with self.assertRaisesRegex(ValueError, "absolute"):
+            bootstrap_module.install_skill(Path("relative-target"))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "existing"
+            target.mkdir()
+            with self.assertRaisesRegex(ValueError, "already exists"):
+                bootstrap_module.install_skill(target)
+
+    def test_install_skill_rejects_target_inside_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = self.make_minimal_skill_source(Path(tmp))
+            target = source / "nested-install"
+
+            with self.assertRaisesRegex(ValueError, "outside"):
+                bootstrap_module.install_skill(target, source_root=source)
+
+    def test_install_skill_does_not_replace_target_created_after_precheck(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            source = self.make_minimal_skill_source(parent)
+            target = parent / "installed-skill"
+            target.mkdir()
+            marker = target / "preserve-me.txt"
+            marker.write_text("existing target", encoding="utf-8")
+
+            with mock.patch.object(bootstrap_module.os.path, "lexists", return_value=False):
+                with self.assertRaisesRegex(ValueError, "already exists"):
+                    bootstrap_module.install_skill(target, source_root=source)
+
+            self.assertEqual(marker.read_text(encoding="utf-8"), "existing target")
+
+    def test_main_bootstraps_copied_skill_at_install_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "installed-skill"
+            with mock.patch.object(
+                bootstrap_module,
+                "install_skill",
+                return_value=target,
+            ) as install_skill:
+                with mock.patch.object(bootstrap_module, "bootstrap", return_value=0) as bootstrap:
+                    result = bootstrap_module.main(["--install-to", str(target)])
+
+        self.assertEqual(result, 0)
+        install_skill.assert_called_once_with(target)
+        bootstrap.assert_called_once_with(
+            target / "tools" / "usb-power-switch-ctl" / ".venv",
+            repository_root=target,
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
