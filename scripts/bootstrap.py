@@ -23,7 +23,6 @@ from typing import Callable, List, Optional, Sequence
 MINIMUM_PYTHON = (3, 9)
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 CLI_PROJECT_DIR = REPOSITORY_ROOT / "tools" / "usb-power-switch-ctl"
-DEFAULT_VENV_DIR = CLI_PROJECT_DIR / ".venv"
 COPY_ROOT_FILES = ("SKILL.md", "README.md", "LICENSE")
 COPY_ROOT_DIRECTORIES = ("docs", "examples", "scripts", "tools")
 TRANSIENT_DIRECTORY_NAMES = {
@@ -33,6 +32,22 @@ TRANSIENT_DIRECTORY_NAMES = {
     "__pycache__",
     "build",
 }
+
+
+def platform_venv_name(platform: str) -> str:
+    """Return the non-portable venv directory name for a supported OS."""
+
+    if platform == "win32":
+        return ".venv-windows"
+    if platform == "darwin":
+        return ".venv-macos"
+    if platform.startswith("linux"):
+        return ".venv-linux"
+    raise ValueError("unsupported platform for bootstrap: {0}".format(platform))
+
+
+DEFAULT_VENV_NAME = platform_venv_name(sys.platform)
+DEFAULT_VENV_DIR = CLI_PROJECT_DIR / DEFAULT_VENV_NAME
 
 
 @dataclass(frozen=True)
@@ -58,7 +73,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--venv-dir",
         type=Path,
         default=DEFAULT_VENV_DIR,
-        help="virtual environment directory (default: bundled CLI .venv)",
+        help=(
+            "virtual environment directory (default: bundled CLI {0})".format(
+                DEFAULT_VENV_NAME
+            )
+        ),
     )
     parser.add_argument(
         "--install-to",
@@ -113,6 +132,23 @@ def parse_probe_output(output: str) -> int:
     return len(ports)
 
 
+def parse_python_version_output(output: str) -> tuple[int, int, int]:
+    """Parse the exact JSON version tuple emitted by the venv check."""
+
+    try:
+        payload = json.loads(output)
+    except json.JSONDecodeError as exc:
+        raise ValueError("venv Python did not return valid version JSON") from exc
+
+    if (
+        not isinstance(payload, list)
+        or len(payload) != 3
+        or any(type(part) is not int for part in payload)
+    ):
+        raise ValueError("venv Python version JSON must contain three integers")
+    return tuple(payload)
+
+
 def summarize_failure(outcome: CommandOutcome) -> str:
     details = (outcome.stderr or outcome.stdout).strip()
     if not details:
@@ -136,6 +172,7 @@ def copy_ignore_transient(_: str, names: List[str]) -> List[str]:
         name
         for name in names
         if name in TRANSIENT_DIRECTORY_NAMES
+        or name.startswith(".venv-")
         or name.endswith(".egg-info")
         or name == ".coverage"
     ]
@@ -176,19 +213,14 @@ def install_skill(target: Path, *, source_root: Path = REPOSITORY_ROOT) -> Path:
     except FileExistsError as exc:
         raise ValueError("--install-to target already exists and will not be overwritten") from exc
 
-    try:
-        for name in COPY_ROOT_FILES:
-            shutil.copy2(str(source_root / name), str(target / name))
-        for name in COPY_ROOT_DIRECTORIES:
-            shutil.copytree(
-                str(source_root / name),
-                str(target / name),
-                ignore=copy_ignore_transient,
-            )
-    except Exception:
-        # Only remove the empty/partial directory this invocation reserved.
-        shutil.rmtree(str(target), ignore_errors=True)
-        raise
+    for name in COPY_ROOT_FILES:
+        shutil.copy2(str(source_root / name), str(target / name))
+    for name in COPY_ROOT_DIRECTORIES:
+        shutil.copytree(
+            str(source_root / name),
+            str(target / name),
+            ignore=copy_ignore_transient,
+        )
     return target
 
 
@@ -237,6 +269,73 @@ def bootstrap(
     )
 
     if python_path.is_file():
+        version_command = [
+            str(python_path),
+            "-c",
+            "import json, sys; print(json.dumps(list(sys.version_info[:3])))",
+        ]
+        try:
+            version_outcome = run_command(version_command, cli_project_dir)
+        except OSError as exc:
+            print_step(
+                "FAIL",
+                "Could not start the existing virtual environment Python: {0}".format(
+                    python_path
+                ),
+            )
+            print(str(exc))
+            print(
+                "Next: inspect or remove and recreate this virtual environment manually: "
+                "{0}".format(venv_dir)
+            )
+            return 1
+        if version_outcome.returncode != 0:
+            print_step(
+                "FAIL",
+                "Existing virtual environment Python version check failed (exit={0}): {1}".format(
+                    version_outcome.returncode,
+                    python_path,
+                ),
+            )
+            print(summarize_failure(version_outcome))
+            print(
+                "Next: inspect or remove and recreate this virtual environment manually: "
+                "{0}".format(venv_dir)
+            )
+            return 1
+        try:
+            venv_version = parse_python_version_output(version_outcome.stdout)
+        except ValueError as exc:
+            print_step(
+                "FAIL",
+                "Existing virtual environment returned an invalid Python version: {0}".format(
+                    python_path
+                ),
+            )
+            print(str(exc))
+            print(
+                "Next: inspect or remove and recreate this virtual environment manually: "
+                "{0}".format(venv_dir)
+            )
+            return 1
+        if venv_version < MINIMUM_PYTHON:
+            print_step(
+                "FAIL",
+                "Existing virtual environment uses Python {0}.{1}.{2}; Python {3}.{4}+ is required: "
+                "{5}".format(
+                    venv_version[0],
+                    venv_version[1],
+                    venv_version[2],
+                    MINIMUM_PYTHON[0],
+                    MINIMUM_PYTHON[1],
+                    python_path,
+                ),
+            )
+            print(
+                "Next: remove and recreate this virtual environment manually with a supported "
+                "Python: {0}".format(venv_dir)
+            )
+            return 1
         print_step("OK", "Reusing isolated virtual environment: {0}".format(venv_dir))
     elif venv_dir.exists():
         print_step(
@@ -323,13 +422,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             repository_root = install_skill(args.install_to)
         except (OSError, ValueError) as exc:
             print_step("FAIL", "Could not install skill pack: {0}".format(exc))
-            print("Next: provide a new absolute target directory outside this checkout, then rerun.")
+            print(
+                "Next: if the target was created, inspect its contents and decide manually whether "
+                "to keep or remove it: {0}".format(args.install_to.expanduser())
+            )
             return 1
         print_step("OK", "Installed skill pack without overwriting files: {0}".format(repository_root))
 
     venv_dir = args.venv_dir
     if args.install_to is not None and venv_dir == DEFAULT_VENV_DIR:
-        venv_dir = repository_root / "tools" / "usb-power-switch-ctl" / ".venv"
+        venv_dir = repository_root / "tools" / "usb-power-switch-ctl" / DEFAULT_VENV_NAME
     return bootstrap(venv_dir, repository_root=repository_root)
 
 

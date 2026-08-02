@@ -72,21 +72,28 @@ sudo usermod -aG dialout "$USER"
 
 Then restart WSL session (`wsl --shutdown` from Windows, then reopen WSL).
 
-## 3. Install and validate CLI in WSL2
+## 3. Bootstrap and validate CLI in WSL2
+
+From the repository root, run the cross-platform bootstrap:
 
 ```bash
-cd tools/usb-power-switch-ctl
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install -e .
+python3 scripts/bootstrap.py
 ```
+
+It creates or reuses `tools/usb-power-switch-ctl/.venv-linux`, installs the CLI,
+and runs only `--list-ports --json`. The separate `.venv-linux` name lets the
+same checkout keep a Windows `.venv-windows` without either environment
+overwriting the other. It does not attach USB devices, modify Linux groups,
+choose a serial port, or send a state-changing command. A zero-port result means
+that the CLI setup succeeded but the WSL2 attachment or device visibility still
+needs attention.
 
 Safe validation flow:
 
 ```bash
-usb-power-switch-ctl --list-ports --json
-usb-power-switch-ctl status --port /dev/ttyUSB0 --json --timeout 3
-usb-power-switch-ctl on --port /dev/ttyUSB0 --dry-run --json
+tools/usb-power-switch-ctl/.venv-linux/bin/usb-power-switch-ctl --list-ports --json
+tools/usb-power-switch-ctl/.venv-linux/bin/usb-power-switch-ctl status --port /dev/ttyUSB0 --json --timeout 3
+tools/usb-power-switch-ctl/.venv-linux/bin/usb-power-switch-ctl on --port /dev/ttyUSB0 --dry-run --json
 ```
 
 The CLI now falls back to a user-private temp-subdirectory log path automatically

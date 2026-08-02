@@ -35,7 +35,18 @@ class BootstrapTests(unittest.TestCase):
         args = bootstrap_module.parse_args([])
 
         self.assertEqual(args.venv_dir, bootstrap_module.DEFAULT_VENV_DIR)
+        self.assertEqual(args.venv_dir.name, bootstrap_module.DEFAULT_VENV_NAME)
         self.assertIsNone(args.install_to)
+
+    def test_platform_venv_name_separates_supported_operating_systems(self) -> None:
+        self.assertEqual(bootstrap_module.platform_venv_name("win32"), ".venv-windows")
+        self.assertEqual(bootstrap_module.platform_venv_name("linux"), ".venv-linux")
+        self.assertEqual(bootstrap_module.platform_venv_name("linux2"), ".venv-linux")
+        self.assertEqual(bootstrap_module.platform_venv_name("darwin"), ".venv-macos")
+
+    def test_platform_venv_name_rejects_unsupported_platform(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unsupported platform"):
+            bootstrap_module.platform_venv_name("freebsd14")
 
     def test_venv_python_path_uses_platform_layout(self) -> None:
         venv_dir = Path("example-venv")
@@ -64,6 +75,8 @@ class BootstrapTests(unittest.TestCase):
 
         def fake_runner(command: list[str], cwd: Path) -> object:
             calls.append((list(command), cwd))
+            if "-c" in command:
+                return bootstrap_module.CommandOutcome(0, "[3, 9, 0]", "")
             if "pip" in command:
                 return bootstrap_module.CommandOutcome(0, "installed", "")
             return bootstrap_module.CommandOutcome(
@@ -83,13 +96,14 @@ class BootstrapTests(unittest.TestCase):
                 result = bootstrap_module.bootstrap(venv_dir, run_command=fake_runner)
 
         self.assertEqual(result, 0)
-        self.assertEqual(len(calls), 2)
-        self.assertIn("pip", calls[0][0])
+        self.assertEqual(len(calls), 3)
+        self.assertIn("-c", calls[0][0])
+        self.assertIn("pip", calls[1][0])
         self.assertEqual(
-            calls[1][0][-2:],
+            calls[2][0][-2:],
             ["--list-ports", "--json"],
         )
-        self.assertNotIn("--execute", calls[1][0])
+        self.assertNotIn("--execute", calls[2][0])
         self.assertIn("No device was selected or modified", output.getvalue())
 
     def test_bootstrap_refuses_to_overwrite_incomplete_venv(self) -> None:
@@ -119,14 +133,86 @@ class BootstrapTests(unittest.TestCase):
                 )
 
         self.assertEqual(result, 1)
-        self.assertIn("Could not start bundled CLI installation", output.getvalue())
+        self.assertIn("Could not start the existing virtual environment Python", output.getvalue())
+        self.assertIn(str(venv_dir), output.getvalue())
+        self.assertIn("recreate this virtual environment manually", output.getvalue())
+
+    def test_bootstrap_rejects_existing_venv_python_version_check_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            venv_dir = Path(tmp) / "venv"
+            python_path = bootstrap_module.venv_python_path(venv_dir)
+            python_path.parent.mkdir(parents=True)
+            python_path.touch()
+            runner = mock.Mock(
+                return_value=bootstrap_module.CommandOutcome(7, "", "runtime failure")
+            )
+            output = io.StringIO()
+
+            with redirect_stdout(output):
+                result = bootstrap_module.bootstrap(venv_dir, run_command=runner)
+
+        self.assertEqual(result, 1)
+        runner.assert_called_once()
+        self.assertIn("version check failed (exit=7)", output.getvalue())
+        self.assertIn("runtime failure", output.getvalue())
+        self.assertIn(str(python_path), output.getvalue())
+        self.assertIn("recreate this virtual environment manually", output.getvalue())
+
+    def test_bootstrap_rejects_invalid_existing_venv_python_version_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            venv_dir = Path(tmp) / "venv"
+            python_path = bootstrap_module.venv_python_path(venv_dir)
+            python_path.parent.mkdir(parents=True)
+            python_path.touch()
+            runner = mock.Mock(
+                return_value=bootstrap_module.CommandOutcome(0, "not-json", "")
+            )
+            output = io.StringIO()
+
+            with redirect_stdout(output):
+                result = bootstrap_module.bootstrap(venv_dir, run_command=runner)
+
+        self.assertEqual(result, 1)
+        runner.assert_called_once()
+        self.assertIn("invalid Python version", output.getvalue())
+        self.assertIn(str(python_path), output.getvalue())
+        self.assertIn("recreate this virtual environment manually", output.getvalue())
+
+    def test_bootstrap_rejects_existing_venv_using_python_3_8(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            venv_dir = Path(tmp) / "venv"
+            python_path = bootstrap_module.venv_python_path(venv_dir)
+            python_path.parent.mkdir(parents=True)
+            python_path.touch()
+            runner = mock.Mock(
+                return_value=bootstrap_module.CommandOutcome(0, "[3, 8, 19]", "")
+            )
+            create_venv = mock.Mock()
+            output = io.StringIO()
+
+            with redirect_stdout(output):
+                result = bootstrap_module.bootstrap(
+                    venv_dir,
+                    run_command=runner,
+                    create_venv=create_venv,
+                )
+
+        self.assertEqual(result, 1)
+        runner.assert_called_once()
+        create_venv.assert_not_called()
+        self.assertIn("Python 3.8.19", output.getvalue())
+        self.assertIn("Python 3.9+ is required", output.getvalue())
+        self.assertIn(str(python_path), output.getvalue())
+        self.assertIn("recreate this virtual environment manually", output.getvalue())
 
     def test_install_skill_copies_only_distributable_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             parent = Path(tmp)
             source = self.make_minimal_skill_source(parent)
-            (source / "tools" / ".venv").mkdir()
-            (source / "tools" / ".venv" / "python").write_text("ignored", encoding="utf-8")
+            transient_venvs = (".venv", ".venv-windows", ".venv-linux", ".venv-macos")
+            for name in transient_venvs:
+                (source / "tools" / name).mkdir()
+                (source / "tools" / name / "python").write_text("ignored", encoding="utf-8")
             (source / "scripts" / "bootstrap.py").write_text("script", encoding="utf-8")
             target = parent / "installed-skill"
 
@@ -135,7 +221,8 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(result, target)
             self.assertTrue((target / "SKILL.md").is_file())
             self.assertTrue((target / "scripts" / "bootstrap.py").is_file())
-            self.assertFalse((target / "tools" / ".venv").exists())
+            for name in transient_venvs:
+                self.assertFalse((target / "tools" / name).exists())
             self.assertFalse((target / "AGENTS.md").exists())
 
     def test_install_skill_creates_missing_target_parents(self) -> None:
@@ -182,6 +269,33 @@ class BootstrapTests(unittest.TestCase):
 
             self.assertEqual(marker.read_text(encoding="utf-8"), "existing target")
 
+    def test_install_skill_preserves_partial_target_and_concurrent_file_on_copy_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            source = self.make_minimal_skill_source(parent)
+            target = parent / "installed-skill"
+            concurrent_marker = target / "created-concurrently.txt"
+
+            def fail_during_copy(source_path: str, destination_path: str) -> str:
+                destination = Path(destination_path)
+                if Path(source_path).name == "SKILL.md":
+                    destination.write_text("partial copy", encoding="utf-8")
+                    return str(destination)
+                concurrent_marker.write_text("preserve me", encoding="utf-8")
+                raise OSError("simulated copy failure")
+
+            with mock.patch.object(
+                bootstrap_module.shutil,
+                "copy2",
+                side_effect=fail_during_copy,
+            ):
+                with self.assertRaisesRegex(OSError, "simulated copy failure"):
+                    bootstrap_module.install_skill(target, source_root=source)
+
+            self.assertTrue(target.is_dir())
+            self.assertEqual((target / "SKILL.md").read_text(encoding="utf-8"), "partial copy")
+            self.assertEqual(concurrent_marker.read_text(encoding="utf-8"), "preserve me")
+
     def test_main_bootstraps_copied_skill_at_install_target(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "installed-skill"
@@ -196,9 +310,30 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(result, 0)
         install_skill.assert_called_once_with(target)
         bootstrap.assert_called_once_with(
-            target / "tools" / "usb-power-switch-ctl" / ".venv",
+            target
+            / "tools"
+            / "usb-power-switch-ctl"
+            / bootstrap_module.DEFAULT_VENV_NAME,
             repository_root=target,
         )
+
+    def test_main_reports_manual_inspection_after_install_copy_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "partial-install"
+            output = io.StringIO()
+            with mock.patch.object(
+                bootstrap_module,
+                "install_skill",
+                side_effect=OSError("simulated copy failure"),
+            ):
+                with redirect_stdout(output):
+                    result = bootstrap_module.main(["--install-to", str(target)])
+
+        self.assertEqual(result, 1)
+        self.assertIn("simulated copy failure", output.getvalue())
+        self.assertIn("inspect its contents", output.getvalue())
+        self.assertIn("decide manually whether to keep or remove it", output.getvalue())
+        self.assertIn(str(target), output.getvalue())
 
 
 if __name__ == "__main__":
