@@ -69,17 +69,12 @@ else
 fi
 
 cli_cmd=()
-if [ -x "$CLI_DIR/.venv/bin/usb-power-switch-ctl" ]; then
-  cli_cmd=("$CLI_DIR/.venv/bin/usb-power-switch-ctl")
-  mark_ok "Found CLI in local venv: $CLI_DIR/.venv/bin/usb-power-switch-ctl"
-elif command -v usb-power-switch-ctl >/dev/null 2>&1; then
-  cli_cmd=("$(command -v usb-power-switch-ctl)")
-  mark_ok "Found CLI on PATH: ${cli_cmd[0]}"
+if [ -x "$CLI_DIR/.venv-linux/bin/usb-power-switch-ctl" ]; then
+  cli_cmd=("$CLI_DIR/.venv-linux/bin/usb-power-switch-ctl")
+  mark_ok "Found CLI in local venv: $CLI_DIR/.venv-linux/bin/usb-power-switch-ctl"
 else
-  mark_fail "usb-power-switch-ctl is not installed."
-  say "       Install in WSL:"
-  say "       cd tools/usb-power-switch-ctl"
-  say "       python3 -m venv .venv && . .venv/bin/activate && python -m pip install -e ."
+  mark_fail "Bundled CLI is not bootstrapped in the local venv."
+  say "       From the skill-pack root, run: python3 scripts/bootstrap.py"
 fi
 
 if [ "${#cli_cmd[@]}" -gt 0 ]; then
@@ -108,7 +103,7 @@ if [ "$fail_count" -gt 0 ]; then
 fi
 
 if [ "$warn_count" -gt 0 ]; then
-  say "Next: review WARN items and proceed with usb-power-switch-ctl status test."
+  say "Next: review WARN items, then run the local venv CLI status test."
 else
-  say "Preflight passed. You can run usb-power-switch-ctl status --port <PORT> --json"
+  say "Preflight passed. Run $CLI_DIR/.venv-linux/bin/usb-power-switch-ctl status --port <PORT> --json"
 fi
