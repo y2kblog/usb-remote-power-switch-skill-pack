@@ -37,20 +37,54 @@ through a deterministic CLI.
 ## CLI location
 - `tools/usb-power-switch-ctl/`
 
+## Setup before operation
+1. Confirm that the complete skill pack, not `SKILL.md` alone, is available in
+   the active skill directory. The bundled CLI, protocol contract, examples,
+   and bootstrap script are required.
+2. Before the first operation, run the following from the skill-pack root:
+   ```bash
+   python3 scripts/bootstrap.py
+   ```
+   On Windows, use `py scripts\bootstrap.py` when available, otherwise
+   `python scripts\bootstrap.py`.
+3. Bootstrap creates or reuses an operating-system-specific venv, installs the
+   CLI, and performs only `--list-ports --json`. The defaults are
+   `.venv-linux` for Linux/WSL2, `.venv-macos` for macOS, and `.venv-windows`
+   for Windows under `tools/usb-power-switch-ctl/`. It must not select a port,
+   request elevated access, attach USB devices to WSL2, or send a
+   state-changing command. Do not reuse one operating system's venv from
+   another operating system.
+4. Use the bootstrap-created CLI directly: on Linux/WSL2,
+   `tools/usb-power-switch-ctl/.venv-linux/bin/usb-power-switch-ctl`; on macOS,
+   `tools/usb-power-switch-ctl/.venv-macos/bin/usb-power-switch-ctl`; on Windows,
+   `tools\usb-power-switch-ctl\.venv-windows\Scripts\usb-power-switch-ctl.exe`.
+   Substitute that exact operating-system-specific path for `<CLI>` in the
+   commands below.
+   Do not fall back to raw serial commands or an arbitrary PATH command when
+   setup is incomplete.
+5. To install from a source checkout into a user or repository skill location,
+   use `scripts/bootstrap.py --install-to <new-absolute-skill-directory>`.
+   The directory must be explicitly chosen and absent; if it already exists,
+   stop and report it rather than overwriting the existing skill. See
+   `README.md` for the Codex and Claude Code locations.
+
 ## CLI command
 ```bash
-usb-power-switch-ctl on|off|power-cycle|status --port <PORT> [--wait 3] [--baud 9600] [--json] [--dry-run|--execute]
+<CLI> on|off|power-cycle|status --port <PORT> [--wait 3] [--baud 9600] [--json] [--dry-run|--execute]
 ```
 
 ## Canonical operation flow
+0. Bootstrap and inspect its non-side-effect port-list result. If no candidates
+   are found, stop and diagnose USB visibility, permissions, or WSL2 passthrough.
+   If multiple candidates are found, require explicit user selection.
 1. Detect ports:
-   - `usb-power-switch-ctl --list-ports`
+   - `<CLI> --list-ports`
 2. Plan (no side effect):
-   - `usb-power-switch-ctl on --port <PORT> --dry-run --json`
+   - `<CLI> on --port <PORT> --dry-run --json`
 3. Execute:
-   - `usb-power-switch-ctl on --port <PORT> --execute`
+   - `<CLI> on --port <PORT> --execute`
 4. Verify:
-   - `usb-power-switch-ctl status --port <PORT> --json`
+   - `<CLI> status --port <PORT> --json`
 
 ## Command mapping
 - `on` => serial command `1`
