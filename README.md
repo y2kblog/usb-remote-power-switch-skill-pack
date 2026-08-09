@@ -22,7 +22,9 @@ Keep the complete repository together: `SKILL.md` relies on the bundled CLI,
 protocol contract, examples, and bootstrap script. From a checked-out copy of
 this repository, an agent or user can install it into a **new, explicit**
 target directory with the commands below. The installer refuses an existing
-target instead of replacing a skill or its virtual environment.
+target instead of replacing a skill or its virtual environment. Installed
+copies include `.gitignore` for bootstrap-created virtual environments and
+`.gitattributes` for LF-only shell scripts.
 
 Codex user skill location (Linux/macOS):
 

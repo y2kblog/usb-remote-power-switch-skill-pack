@@ -969,22 +969,50 @@ def run_command(
                             result=result,
                         ) from exc
             else:
-                exchange_with_action(
-                    transport,
-                    result.actions,
-                    step=command,
-                    tx=WIRE_COMMANDS[command],
-                )
+                control_error: PowerCtlError | None = None
+                try:
+                    exchange_with_action(
+                        transport,
+                        result.actions,
+                        step=command,
+                        tx=WIRE_COMMANDS[command],
+                    )
+                except PowerCtlError as exc:
+                    control_error = exc
 
-                result.state_after = query_state(
-                    transport,
-                    result.actions,
-                    step="status_after",
-                )
+                try:
+                    result.state_after = query_state(
+                        transport,
+                        result.actions,
+                        step="status_after",
+                    )
+                except PowerCtlError as verification_error:
+                    if control_error is None:
+                        raise
+                    result.note = (
+                        "control write response failed; postcondition could not be "
+                        f"verified: {verification_error}"
+                    )
+                    control_error.result = result
+                    raise control_error from verification_error
                 expected_state = predict_state_after(
                     command,
                     result.state_before,
                 )
+                if control_error is not None:
+                    if result.state_after == expected_state:
+                        result.note = (
+                            "control write response failed; postcondition verified by "
+                            "status query"
+                        )
+                    else:
+                        result.note = (
+                            "control write response failed; status query observed an "
+                            f"unexpected state: expected {expected_state}, "
+                            f"got {result.state_after}"
+                        )
+                    control_error.result = result
+                    raise control_error
                 if result.state_after != expected_state:
                     raise PowerCtlError(
                         (

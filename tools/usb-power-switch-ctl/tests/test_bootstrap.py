@@ -220,6 +220,8 @@ class BootstrapTests(unittest.TestCase):
 
             self.assertEqual(result, target)
             self.assertTrue((target / "SKILL.md").is_file())
+            self.assertTrue((target / ".gitignore").is_file())
+            self.assertTrue((target / ".gitattributes").is_file())
             self.assertTrue((target / "scripts" / "bootstrap.py").is_file())
             for name in transient_venvs:
                 self.assertFalse((target / "tools" / name).exists())
