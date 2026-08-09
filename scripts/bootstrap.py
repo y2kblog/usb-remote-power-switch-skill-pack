@@ -23,7 +23,7 @@ from typing import Callable, List, Optional, Sequence
 MINIMUM_PYTHON = (3, 9)
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 CLI_PROJECT_DIR = REPOSITORY_ROOT / "tools" / "usb-power-switch-ctl"
-COPY_ROOT_FILES = ("SKILL.md", "README.md", "LICENSE")
+COPY_ROOT_FILES = ("SKILL.md", "README.md", "LICENSE", ".gitignore", ".gitattributes")
 COPY_ROOT_DIRECTORIES = ("docs", "examples", "scripts", "tools")
 TRANSIENT_DIRECTORY_NAMES = {
     ".mypy_cache",

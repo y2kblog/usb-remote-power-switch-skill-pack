@@ -521,6 +521,57 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(fake_transport.writes, ["s", "1", "s"])
 
+    def test_execute_on_queries_state_after_control_response_timeout(self) -> None:
+        fake_transport = FakeTransport(
+            [
+                "0",
+                cli.PowerCtlError(
+                    "simulated ON timeout",
+                    cli.EXIT_PROTOCOL,
+                    "device_timeout",
+                ),
+                "1",
+            ]
+        )
+
+        def fake_factory(**_: object) -> FakeTransport:
+            return fake_transport
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            log_file = Path(tmp) / "powerctl.log"
+            code = cli.main(
+                [
+                    "on",
+                    "--port",
+                    "COM9",
+                    "--execute",
+                    "--yes",
+                    "--json",
+                    "--log-file",
+                    str(log_file),
+                ],
+                output_stream=stdout,
+                error_stream=stderr,
+                transport_factory=fake_factory,
+                now_fn=lambda: FIXED_NOW,
+            )
+
+        self.assertEqual(code, cli.EXIT_PROTOCOL)
+        self.assertEqual(stdout.getvalue().strip(), "")
+        payload = json.loads(stderr.getvalue())
+        self.assertEqual(payload["error"]["code"], "device_timeout")
+        self.assertEqual(payload["state_before"], "off")
+        self.assertEqual(payload["state_after"], "on")
+        self.assertIn("postcondition verified", payload["note"])
+        self.assertEqual(
+            [action["step"] for action in payload["actions"]],
+            ["status_before", "on", "status_after"],
+        )
+        self.assertEqual(payload["actions"][1]["note"], "attempted; no response")
+        self.assertEqual(fake_transport.writes, ["s", "1", "s"])
+
     def test_execute_without_yes_aborts_when_non_interactive(self) -> None:
         fake_transport = FakeTransport(["1"])
 
